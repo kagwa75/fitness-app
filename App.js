@@ -5,10 +5,10 @@ import { StatusBar } from 'expo-status-bar';
 export default function App() {
   return (
     <>
-    <FitnessContext>
+      <FitnessContext>
         <StatusBar style="light" backgroundColor='#000' />
         <StackNavigator />
-    </FitnessContext>
+      </FitnessContext>
     </>
   );
 }

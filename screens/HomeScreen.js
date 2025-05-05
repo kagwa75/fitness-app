@@ -12,13 +12,13 @@ const HomeScreen = () => {
     <ScrollView showsVerticalScrollIndicator={false}
       style={{ marginTop: 20 }}>
       <View style={{ backgroundColor: "#000000d7", paddingTop: 40, paddingHorizontal: 20, height: 160, width: "100%" }}>
-        <View style={{flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 50}}>
-          <Text style={{ color: "white", fontWeight: "bold", fontSize: 18 }}>SIX PACK IN 30 DAYS</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 50 }}>
+          <Text style={{ color: "white", fontWeight: "bold", fontSize: 18 }}>FITNESS PARTNER</Text>
 
           {/* Dark Mode  */}
           <TouchableOpacity onPress={() => setShowIcon(!showIcon)}>
-            {showIcon ? <Ionicons name="sunny" size={24} color="white" /> : <Ionicons name="moon" size={24} color="white" /> }
-          </TouchableOpacity>  
+            {showIcon ? <Ionicons name="sunny" size={24} color="black" /> : <Ionicons name="moon" size={24} color="white" />}
+          </TouchableOpacity>
         </View>
 
         {/* Cards Row  */}

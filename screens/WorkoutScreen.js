@@ -11,6 +11,9 @@ const WorkoutScreen = () => {
   const navigation = useNavigation();
   const { completed, setCompleted } = useContext(FitnessItems);
 
+
+  const { exercises, image } = route.params;
+
   return (
     <>
       <ScrollView
@@ -19,7 +22,7 @@ const WorkoutScreen = () => {
       >
         <Image
           style={{ width: "100%", height: 200, borderBottomLeftRadius: 20, borderBottomRightRadius: 20, marginBottom: 20 }}
-          source={{ uri: route.params.image }}
+          source={{ uri: image }}
         />
 
         <Ionicons
@@ -31,14 +34,15 @@ const WorkoutScreen = () => {
         />
 
         {
-          route.params.exercises.map((item, index) => (
+          exercises.map((item, index) => (
             <TouchableOpacity style={{ marginVertical: 12, marginHorizontal: 18, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }} key={index}>
               <View style={{ flexDirection: "row", alignItems: "center", }}>
-                <Image style={{ width: 90, height: 90, }} source={{ uri: item.image }} />
+                <Image style={{ width: 90, height: 90, }} source={{ uri: item.gifUrl }} />
 
-                <View style={{ marginLeft: 10 }}>
+                <View style={{ marginLeft: 10, flexDirection: "column", display: "flex" }}>
                   <Text style={{ fontSize: 18, fontWeight: "bold" }}>{item.name}</Text>
-                  <Text style={{ marginTop: 4, fontSize: 16, color: "gray" }}>{item.sets}</Text>
+                  <Text style={{ marginTop: 4, fontSize: 16, color: "gray" }}>{item.duration ? item.duration : item.sets}</Text>
+                  <View style={{ height: 1, backgroundColor: "#EEE", width: "100%", marginLeft: 60, marginTop: 40 }}></View>
                 </View>
               </View>
 
@@ -51,9 +55,9 @@ const WorkoutScreen = () => {
       </ScrollView>
 
       <TouchableOpacity onPress={() => {
-        navigation.navigate("Fit", { exercises: route.params.exercises }) 
+        navigation.navigate("Fit", { exercises: route.params.exercises })
         setCompleted([]);
-      }} style={{ backgroundColor: "#198f51", padding: 12, marginHorizontal: 15, marginVertical: 20, borderRadius: 50}}>
+      }} style={{ backgroundColor: "#198f51", padding: 12, marginHorizontal: 15, marginVertical: 20, borderRadius: 50 }}>
         <Text style={{ textAlign: "center", color: "#fff", fontWeight: "bold", fontSize: 20 }}><MaterialCommunityIcons name="whistle" size={24} color="white" /> START</Text>
       </TouchableOpacity>
     </>
