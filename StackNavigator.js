@@ -9,6 +9,7 @@ import { View } from 'react-native';
 
 // Import your tab screens
 import Main from './tabs/main';
+import Records from './tabs/records';
 import Exercises from './tabs/exercises';
 import Profile from './tabs/profile';
 
@@ -18,7 +19,7 @@ import FitScreen from './screens/FitScreen';
 import RestScreen from './screens/RestScreen';
 import Days from './screens/Days';
 import UserProfile from './components/userProfile';
-import ApiExercises from './components/ApiExercise';
+import Feedback from './components/Feedback';
 import { TokenCache } from './auth/auth';
 
 const Stack = createNativeStackNavigator();
@@ -37,7 +38,11 @@ function MainTabs() {
             iconName = focused ? 'home' : 'home-outline';
           } else if (route.name === 'Exercises') {
             iconName = focused ? 'barbell' : 'barbell-outline';
-          } else if (route.name === 'Profile') {
+          }
+          else if (route.name === 'Records') {
+            iconName = focused ? 'list' : 'list-outline';
+          }
+          else if (route.name === 'Profile') {
             iconName = focused ? 'person' : 'person-outline';
           }
 
@@ -50,6 +55,7 @@ function MainTabs() {
     >
       <Tab.Screen name="Main" component={Main} />
       <Tab.Screen name="Exercises" component={Exercises} />
+      <Tab.Screen name="Records" component={Records} />
       <Tab.Screen name="Profile" component={Profile} />
     </Tab.Navigator>
   );
@@ -87,7 +93,7 @@ export default function AppNavigation() {
             <Stack.Screen name="Rest" component={RestScreen} options={{ headerShown: false }} />
             <Stack.Screen name="Days" component={Days} options={{ headerShown: false }} />
             <Stack.Screen name="userProfile" component={UserProfile} options={{ headerShown: false }} />
-            <Stack.Screen name="ApiList" component={ApiExercises} options={{ headerShown: false }} />
+            <Stack.Screen name="feedback" component={Feedback} options={{ headerShown: false }} />
           </Stack.Navigator>
         </NavigationContainer>
       </ClerkLoaded>

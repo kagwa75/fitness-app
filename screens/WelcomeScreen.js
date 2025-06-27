@@ -12,7 +12,7 @@ export default function Welcome() {
             <View style={{ display: "flex", flexDirection: "column", alignItems: "center", position: "absolute" }}>
                 <Text style={{ fontSize: 30, marginBottom: 20, color: "white", fontWeight: 50 }}>Welcome to Fitness App!</Text>
                 <TouchableOpacity
-                    onPress={() => navigation.navigate('App')} // Navigates to your TabNavigator
+                    onPress={() => navigation.navigate('App')}
                     style={{
                         backgroundColor: 'tomato',
                         padding: 15,

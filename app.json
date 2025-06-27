@@ -22,10 +22,20 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "package": "com.kagwanja.reactnativefitnessapp"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "7ff831df-312f-40d6-81e7-a587542b6bce"
+      }
+    },
+    "owner": "kagwanja",
+    "plugins": [
+      "expo-router"
+    ]
   }
 }

@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth, useOAuth, useUser } from '@clerk/clerk-expo';
 import { fetchAPI } from '../auth/fetch';
+import axios from 'axios';
 
 export default function Welcome() {
     const { isSignedIn } = useAuth();
@@ -31,16 +32,11 @@ export default function Welcome() {
                 if (isSignedIn && user) {
                     console.log("User object after sign-in:", user);
 
-                    await fetchAPI("app/api/user", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                            name: `${user.firstName} ${user.lastName}`,
-                            email: user.primaryEmailAddress.emailAddress,
-                            clerkId: user.id,
-                        }),
+                    await axios.post("http://192.168.64.194:3000/users", {
+                        name: `${user.firstName} ${user.lastName}`,
+                        email: user.primaryEmailAddress.emailAddress,
+                        clerkId: user.id,
+
                     });
 
                     return {
@@ -78,11 +74,23 @@ export default function Welcome() {
 
     return (
         <SafeAreaView style={styles.container}>
+
             {/* Header */}
             <View style={styles.header}>
                 <View style={styles.headerContent}>
-                    <Text style={styles.headerTitle}>Backup & Restore</Text>
-                    <Text style={styles.headerSubtitle}>Synchronize your data</Text>
+                    {isSignedIn ? (
+                        <>
+                            <Text style={styles.greetingText}>
+                                {user.firstName}!
+                            </Text>
+                            <Text style={styles.headerSubtitle}>Welcome back</Text>
+                        </>
+                    ) : (
+                        <>
+                            <Text style={styles.headerTitle}>Backup & Restore</Text>
+                            <Text style={styles.headerSubtitle}>Synchronize your data</Text>
+                        </>
+                    )}
                 </View>
                 <TouchableOpacity onPress={LoginWithGoogle}>
                     <Ionicons name='reload' size={22} color="#4A90E2" />
@@ -105,7 +113,7 @@ export default function Welcome() {
                     iconName="settings"
                     title="General Settings"
                     backgroundColor="#34C759"
-                    onPress={() => navigation.navigate("ApiList")}
+
                 />
                 <View style={styles.divider} />
 
@@ -138,6 +146,7 @@ export default function Welcome() {
                     iconName="create"
                     title="Feedback"
                     backgroundColor="#5AC8FA"
+                    onPress={() => navigation.navigate("feedback")}
                 />
             </View>
         </SafeAreaView>

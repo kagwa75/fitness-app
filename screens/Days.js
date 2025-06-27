@@ -1,26 +1,37 @@
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { Image, ScrollView, Text, TouchableOpacity, View, Animated, ActivityIndicator } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { icons } from "../constants";
 import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useRef, useState } from "react";
 import { Feather } from "@expo/vector-icons";
 
 const Days = () => {
-    const navigate = useNavigation();
+    const navigation = useNavigation();
+    const route = useRoute();
     const [apiExercises, setApiExercises] = useState([]);
     const [loading, setLoading] = useState(true);
-    const { list, item: data, workouts, image } = useRoute().params;
+    const [error, setError] = useState(null);
+    const { list, workouts, image } = route.params;
     const fadeAnim = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
         const fetchExercises = async () => {
             try {
+                setLoading(true);
+                setError(null);
+
+                // Calculate total exercises needed across all workout days
+                const totalExercisesNeeded = workouts.reduce((total, workoutDay) => {
+                    return total + (workoutDay.exercises?.length || 0);
+                }, 0);
+
+                // Ensure we fetch at least 10 exercises as a fallback
+                const limit = Math.max(totalExercisesNeeded, 10);
+
                 const response = await fetch(
-                    `https://exercisedb.p.rapidapi.com/exercises/bodyPart/${list.toLowerCase()}?limit=10`,
+                    `https://exercisedb.p.rapidapi.com/exercises/bodyPart/${list.toLowerCase()}?limit=${limit}`,
                     {
                         headers: {
-                            'x-rapidapi-key': '4b35b2e3camshc1fb6629a92c312p1f22b2jsnf8899d2596dd', // Replace with your key
+                            'x-rapidapi-key': '4b35b2e3camshc1fb6629a92c312p1f22b2jsnf8899d2596dd',
                             'x-rapidapi-host': 'exercisedb.p.rapidapi.com',
                         },
                     }
@@ -28,12 +39,11 @@ const Days = () => {
 
                 if (!response.ok) throw new Error("Failed to fetch exercises");
                 const data = await response.json();
-                console.log("data: ", data);
                 setApiExercises(data);
 
-
-            } catch (error) {
-                console.error("API Error:", error);
+            } catch (err) {
+                console.error("API Error:", err);
+                setError(err.message);
             } finally {
                 setLoading(false);
                 Animated.timing(fadeAnim, {
@@ -45,12 +55,38 @@ const Days = () => {
         };
 
         fetchExercises();
-    }, [list]);
+    }, [list, workouts]);
+
+    const getExercisesForWorkoutDay = (workoutDay) => {
+        // If API call failed or no exercises, fall back to local exercises
+        if (apiExercises.length === 0 || error) {
+            return workoutDay.exercises || [];
+        }
+
+        // Return the first N exercises where N is the workout day's exercise count
+        return apiExercises.slice(0, workoutDay.exercises?.length || 0);
+    };
 
     if (loading) {
         return (
             <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
                 <ActivityIndicator size="large" />
+            </View>
+        );
+    }
+
+    if (error) {
+        return (
+            <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 20 }}>
+                <Text style={{ color: 'red', marginBottom: 20, textAlign: 'center' }}>
+                    Couldn't load exercises. Using local exercises instead.
+                </Text>
+                <TouchableOpacity
+                    onPress={() => navigation.goBack()}
+                    style={{ padding: 15, backgroundColor: '#6366F1', borderRadius: 10 }}
+                >
+                    <Text style={{ color: 'white', fontWeight: 'bold' }}>Go Back</Text>
+                </TouchableOpacity>
             </View>
         );
     }
@@ -77,7 +113,7 @@ const Days = () => {
 
                 {/* Back Button */}
                 <TouchableOpacity
-                    onPress={() => navigate.goBack()}
+                    onPress={() => navigation.goBack()}
                     style={{
                         position: "absolute",
                         top: 50,
@@ -120,7 +156,7 @@ const Days = () => {
                         {workouts.length} workout days
                     </Text>
 
-                    {workouts.map((item, index) => (
+                    {workouts.map((workoutDay, index) => (
                         <Animated.View
                             key={index}
                             style={{
@@ -134,8 +170,8 @@ const Days = () => {
                             }}
                         >
                             <TouchableOpacity
-                                onPress={() => navigate.navigate("Workout", {
-                                    exercises: apiExercises,
+                                onPress={() => navigation.navigate("Workout", {
+                                    exercises: getExercisesForWorkoutDay(workoutDay),
                                     image: image,
                                 })}
                                 activeOpacity={0.8}
@@ -161,7 +197,7 @@ const Days = () => {
                                         color: "#333",
                                         marginBottom: 5
                                     }}>
-                                        {item.name}
+                                        {workoutDay.name}
                                     </Text>
 
                                     <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -171,7 +207,7 @@ const Days = () => {
                                             color: "#888",
                                             marginLeft: 5
                                         }}>
-                                            {item.exercises?.length || 1} exercises
+                                            {getExercisesForWorkoutDay(workoutDay).length} exercises
                                         </Text>
                                     </View>
                                 </View>
