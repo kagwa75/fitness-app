@@ -26,6 +26,7 @@
       "package": "com.kagwanja.reactnativefitnessapp"
     },
     "web": {
+      "bundler": "metro",
       "favicon": "./assets/favicon.png"
     },
     "extra": {
@@ -35,7 +36,9 @@
     },
     "owner": "kagwanja",
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-secure-store",
+      "expo-web-browser"
     ]
   }
 }

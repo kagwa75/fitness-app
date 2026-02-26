@@ -1,231 +1,628 @@
 import { useNavigation } from '@react-navigation/native';
-import { Text, TouchableOpacity, View, StyleSheet } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { SafeAreaView } from "react-native-safe-area-context";
+import {
+    Text,
+    TouchableOpacity,
+    View,
+    StyleSheet,
+    Animated,
+    StatusBar,
+    ScrollView,
+    Alert,
+    Dimensions,
+    Image,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Feather, MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth, useOAuth, useUser } from '@clerk/clerk-expo';
-import { fetchAPI } from '../auth/fetch';
+import { useContext, useRef, useEffect, useState } from 'react';
+import { FitnessItems } from '../Context';
 import axios from 'axios';
+import API_BASE_URL from '../constants/api';
 
-export default function Welcome() {
-    const { isSignedIn } = useAuth();
-    const { user } = useUser();
-    const navigation = useNavigation();
+const { width } = Dimensions.get('window');
 
-    const SettingItem = ({ iconName, iconColor, title, backgroundColor, onPress }) => (
-        <TouchableOpacity style={styles.settingItem} onPress={onPress}>
-            <View style={[styles.iconContainer, { backgroundColor }]}>
-                <Ionicons name={iconName} size={20} color={iconColor ? iconColor : "white"} />
-            </View>
-            <Text style={styles.settingText}>{title}</Text>
-            <Ionicons name="chevron-forward" size={18} color="#999" />
-        </TouchableOpacity>
-    );
-    const { startOAuthFlow } = useOAuth({ strategy: "oauth_google" });
+// ── Setting row ───────────────────────────────────────────────
+const SettingRow = ({ iconName, iconLib = 'feather', label, accentColor = '#FF4D2E', onPress, isDestructive, delay = 0 }) => {
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+    const slideAnim = useRef(new Animated.Value(20)).current;
+    const opacityAnim = useRef(new Animated.Value(0)).current;
 
-    const googleOAth = async (startOAuthFlow) => {
-        try {
-            const { createdSessionId, setActive } = await startOAuthFlow();
+    useEffect(() => {
+        Animated.sequence([
+            Animated.delay(delay),
+            Animated.parallel([
+                Animated.spring(slideAnim, { toValue: 0, tension: 80, friction: 10, useNativeDriver: true }),
+                Animated.timing(opacityAnim, { toValue: 1, duration: 350, useNativeDriver: true }),
+            ]),
+        ]).start();
+    }, []);
 
-            if (createdSessionId && setActive) {
-                await setActive({ session: createdSessionId });
+    const handlePressIn = () =>
+        Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 300 }).start();
+    const handlePressOut = () =>
+        Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
 
-                if (isSignedIn && user) {
-                    console.log("User object after sign-in:", user);
-
-                    await axios.post("http://192.168.64.194:3000/users", {
-                        name: `${user.firstName} ${user.lastName}`,
-                        email: user.primaryEmailAddress.emailAddress,
-                        clerkId: user.id,
-
-                    });
-
-                    return {
-                        success: true,
-                        code: "success",
-                        message: "You have successfully signed in with Google",
-                    };
-                }
-            }
-
-            return {
-                success: false,
-                message: "An error occurred while signing in with Google",
-            };
-        } catch (error) {
-            console.error(error);
-            return {
-                success: false,
-                code: error.code,
-                message: error?.errors?.[0]?.longMessage || error.message,
-            };
-        }
-    };
-    const LoginWithGoogle = async () => {
-        const result = await googleOAth(startOAuthFlow);
-
-        console.log("result", result);
-        if (result.code === "session_exists") {
-            Alert.alert("Succcess", "Session exists. Redrirectin to home screen");
-            navigation.navigate("App");
-        }
-
-        Alert.alert(result.success ? "success" : " Error"), result.message;
-    };
+    const IconComponent = iconLib === 'material' ? MaterialCommunityIcons : Feather;
 
     return (
-        <SafeAreaView style={styles.container}>
+        <Animated.View style={{ opacity: opacityAnim, transform: [{ translateY: slideAnim }, { scale: scaleAnim }] }}>
+            <TouchableOpacity
+                onPress={onPress}
+                onPressIn={handlePressIn}
+                onPressOut={handlePressOut}
+                activeOpacity={1}
+            >
+                <View style={styles.settingRow}>
+                    {/* Icon badge */}
+                    <View style={[styles.settingIconBg, { backgroundColor: accentColor + '18' }]}>
+                        <IconComponent
+                            name={iconName}
+                            size={16}
+                            color={isDestructive ? '#FF4D2E' : accentColor}
+                        />
+                    </View>
 
-            {/* Header */}
-            <View style={styles.header}>
-                <View style={styles.headerContent}>
-                    {isSignedIn ? (
-                        <>
-                            <Text style={styles.greetingText}>
-                                {user.firstName}!
-                            </Text>
-                            <Text style={styles.headerSubtitle}>Welcome back</Text>
-                        </>
-                    ) : (
-                        <>
-                            <Text style={styles.headerTitle}>Backup & Restore</Text>
-                            <Text style={styles.headerSubtitle}>Synchronize your data</Text>
-                        </>
-                    )}
+                    <Text style={[styles.settingLabel, isDestructive && { color: '#FF4D2E' }]}>
+                        {label}
+                    </Text>
+
+                    <Feather name="chevron-right" size={15} color="#333" />
                 </View>
-                <TouchableOpacity onPress={LoginWithGoogle}>
-                    <Ionicons name='reload' size={22} color="#4A90E2" />
-                </TouchableOpacity>
-            </View>
+            </TouchableOpacity>
+        </Animated.View>
+    );
+};
 
-            {/* Settings Sections */}
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Account Settings</Text>
+// ── Section wrapper ───────────────────────────────────────────
+const SettingSection = ({ title, children }) => (
+    <View style={styles.section}>
+        <Text style={styles.sectionLabel}>{title}</Text>
+        <View style={styles.sectionCard}>
+            {children}
+        </View>
+    </View>
+);
 
-                <SettingItem
-                    iconName="happy"
-                    title="My Profile"
-                    backgroundColor="#FF9500"
-                    onPress={() => navigation.navigate("userProfile")}
-                />
-                <View style={styles.divider} />
+// ── Google sign-in button ─────────────────────────────────────
+const GoogleSignInBtn = ({ onPress, loading }) => {
+    const scaleAnim = useRef(new Animated.Value(1)).current;
 
-                <SettingItem
-                    iconName="settings"
-                    title="General Settings"
-                    backgroundColor="#34C759"
+    const handlePressIn = () =>
+        Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 300 }).start();
+    const handlePressOut = () =>
+        Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
 
-                />
-                <View style={styles.divider} />
+    return (
+        <TouchableOpacity
+            onPress={onPress}
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            activeOpacity={1}
+        >
+            <Animated.View style={[styles.googleBtn, { transform: [{ scale: scaleAnim }] }]}>
+                <MaterialCommunityIcons name="google" size={18} color="#fff" />
+                <Text style={styles.googleBtnText}>
+                    {loading ? 'Signing in...' : 'Continue with Google'}
+                </Text>
+            </Animated.View>
+        </TouchableOpacity>
+    );
+};
 
-                <SettingItem
-                    iconName="globe"
-                    title="Language"
-                    backgroundColor="#5856D6"
-                />
-            </View>
+// ── Main screen ───────────────────────────────────────────────
+export default function Profile() {
+    const navigation = useNavigation();
+    const { isSignedIn, signOut } = useAuth();
+    const { user, isLoaded: isUserLoaded } = useUser();
+    const { calories, minutes, workout } = useContext(FitnessItems);
+    const [googleLoading, setGoogleLoading] = useState(false);
+    const syncedUserIdsRef = useRef(new Set());
 
-            {/*app details */}
-            <View style={styles.section}>
-                <Text style={styles.sectionTitle}>App</Text>
+    const { startOAuthFlow } = useOAuth({ strategy: 'oauth_google' });
 
-                <SettingItem
-                    iconName="close"
-                    title="Remove Ads"
-                    backgroundColor="#FF3B30"
-                />
-                <View style={styles.divider} />
+    const headerOpacity = useRef(new Animated.Value(0)).current;
+    const headerY = useRef(new Animated.Value(-20)).current;
+    const avatarScale = useRef(new Animated.Value(0.8)).current;
 
-                <SettingItem
-                    iconName="star"
-                    title="Rate Us"
-                    backgroundColor="#FFCC00"
-                />
-                <View style={styles.divider} />
+    useEffect(() => {
+        Animated.parallel([
+            Animated.timing(headerOpacity, { toValue: 1, duration: 600, useNativeDriver: true }),
+            Animated.spring(headerY, { toValue: 0, tension: 70, friction: 10, useNativeDriver: true }),
+            Animated.spring(avatarScale, { toValue: 1, tension: 60, friction: 8, useNativeDriver: true }),
+        ]).start();
+    }, []);
 
-                <SettingItem
-                    iconName="create"
-                    title="Feedback"
-                    backgroundColor="#5AC8FA"
-                    onPress={() => navigation.navigate("feedback")}
-                />
-            </View>
-        </SafeAreaView>
-    )
+    const syncUserToDatabase = async (clerkUser) => {
+        const clerkId = clerkUser?.id;
+        if (!clerkId || syncedUserIdsRef.current.has(clerkId)) return;
+
+        const email =
+            clerkUser?.primaryEmailAddress?.emailAddress ||
+            clerkUser?.emailAddresses?.[0]?.emailAddress ||
+            '';
+
+        const firstName = String(clerkUser?.firstName || '').trim();
+        const lastName = String(clerkUser?.lastName || '').trim();
+        const fallbackName = email ? email.split('@')[0] : 'User';
+        const name = `${firstName} ${lastName}`.trim() || fallbackName;
+
+        if (!email) return;
+
+        try {
+            await axios.post(`${API_BASE_URL}/users`, {
+                name,
+                email,
+                clerkId,
+            });
+            syncedUserIdsRef.current.add(clerkId);
+        } catch (error) {
+            console.error('Failed to sync user to database:', error);
+        }
+    };
+
+    useEffect(() => {
+        if (!isUserLoaded || !isSignedIn || !user?.id) return;
+        syncUserToDatabase(user);
+    }, [isUserLoaded, isSignedIn, user?.id]);
+
+    const handleGoogleSignIn = async () => {
+        setGoogleLoading(true);
+        try {
+            const { createdSessionId, setActive } = await startOAuthFlow();
+            if (!createdSessionId || !setActive) {
+                Alert.alert('Sign in cancelled', 'Google sign in was not completed.');
+                return;
+            }
+
+            await setActive({ session: createdSessionId });
+            Alert.alert('Success', 'Signed in with Google!');
+        } catch (error) {
+            console.error(error);
+            Alert.alert('Error', error?.errors?.[0]?.longMessage || error.message);
+        } finally {
+            setGoogleLoading(false);
+        }
+    };
+
+    const handleSignOut = () => {
+        Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Sign Out', style: 'destructive', onPress: () => signOut() },
+        ]);
+    };
+
+    const initials = isSignedIn && user
+        ? `${user.firstName?.[0] ?? ''}${user.lastName?.[0] ?? ''}`.toUpperCase()
+        : '?';
+
+    const displayName = isSignedIn && user
+        ? `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim()
+        : 'Guest User';
+
+    const displayEmail = isSignedIn && user
+        ? user.primaryEmailAddress?.emailAddress
+        : 'Not signed in';
+
+    return (
+        <View style={styles.container}>
+            <StatusBar barStyle="light-content" />
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+                {/* Header gradient */}
+                <LinearGradient
+                    colors={['#0D0D0F', '#131318']}
+                    style={styles.headerGradient}
+                >
+                    <SafeAreaView edges={['top']}>
+                        <Animated.View
+                            style={[
+                                styles.headerContent,
+                                { opacity: headerOpacity, transform: [{ translateY: headerY }] },
+                            ]}
+                        >
+                            {/* Page label */}
+                            <View style={styles.pageBadge}>
+                                <MaterialCommunityIcons name="lightning-bolt" size={11} color="#FF4D2E" />
+                                <Text style={styles.pageBadgeText}>PROFILE</Text>
+                            </View>
+
+                            {/* Avatar + identity */}
+                            <View style={styles.profileRow}>
+                                <Animated.View style={[styles.avatarWrapper, { transform: [{ scale: avatarScale }] }]}>
+                                    {isSignedIn && user?.imageUrl ? (
+                                        <Image
+                                            source={{ uri: user.imageUrl }}
+                                            style={styles.avatarImage}
+                                        />
+                                    ) : (
+                                        <LinearGradient
+                                            colors={['#FF4D2E', '#FF2800']}
+                                            style={styles.avatarGradient}
+                                        >
+                                            <Text style={styles.avatarInitials}>{initials}</Text>
+                                        </LinearGradient>
+                                    )}
+                                    {isSignedIn && (
+                                        <View style={styles.onlineDot} />
+                                    )}
+                                </Animated.View>
+
+                                <View style={styles.identityInfo}>
+                                    <Text style={styles.displayName}>{displayName}</Text>
+                                    <Text style={styles.displayEmail}>{displayEmail}</Text>
+                                    {isSignedIn && (
+                                        <View style={styles.verifiedBadge}>
+                                            <Feather name="check-circle" size={10} color="#00E5BE" />
+                                            <Text style={styles.verifiedText}>Verified</Text>
+                                        </View>
+                                    )}
+                                </View>
+                            </View>
+
+                            {/* Mini stat row */}
+                            <View style={styles.miniStats}>
+                                {[
+                                    { value: workout, label: 'Workouts', color: '#FF4D2E' },
+                                    { value: minutes, label: 'Minutes', color: '#00E5BE' },
+                                    { value: calories.toFixed(0), label: 'Kcal', color: '#6C63FF' },
+                                ].map((s, i) => (
+                                    <View key={i} style={styles.miniStat}>
+                                        <Text style={[styles.miniStatValue, { color: s.color }]}>{s.value}</Text>
+                                        <Text style={styles.miniStatLabel}>{s.label}</Text>
+                                    </View>
+                                ))}
+                            </View>
+                        </Animated.View>
+                    </SafeAreaView>
+                </LinearGradient>
+
+                {/* Sign-in prompt if not signed in */}
+                {!isSignedIn && (
+                    <View style={styles.signInPrompt}>
+                        <View style={styles.signInIconBg}>
+                            <MaterialCommunityIcons name="cloud-sync-outline" size={24} color="#FF4D2E" />
+                        </View>
+                        <Text style={styles.signInTitle}>Sync your progress</Text>
+                        <Text style={styles.signInSubtext}>
+                            Sign in to back up your workouts and access them from any device
+                        </Text>
+                        <GoogleSignInBtn onPress={handleGoogleSignIn} loading={googleLoading} />
+                    </View>
+                )}
+
+                {/* Settings groups */}
+                <View style={styles.settingsContainer}>
+                    <SettingSection title="ACCOUNT">
+                        <SettingRow
+                            iconName="user"
+                            label="My Profile"
+                            accentColor="#FF9500"
+                            onPress={() => navigation.navigate('userProfile')}
+                            delay={100}
+                        />
+                        <View style={styles.rowDivider} />
+                        <SettingRow
+                            iconName="settings"
+                            label="General Settings"
+                            accentColor="#34C759"
+                            delay={150}
+                        />
+                        <View style={styles.rowDivider} />
+                        <SettingRow
+                            iconName="globe"
+                            label="Language"
+                            accentColor="#5856D6"
+                            delay={200}
+                        />
+                    </SettingSection>
+
+                    <SettingSection title="APP">
+                        <SettingRow
+                            iconName="zap-off"
+                            label="Remove Ads"
+                            accentColor="#FF3B30"
+                            delay={250}
+                        />
+                        <View style={styles.rowDivider} />
+                        <SettingRow
+                            iconName="star"
+                            label="Rate Us"
+                            accentColor="#FFB800"
+                            delay={300}
+                        />
+                        <View style={styles.rowDivider} />
+                        <SettingRow
+                            iconName="message-square"
+                            label="Send Feedback"
+                            accentColor="#00C2FF"
+                            onPress={() => navigation.navigate('feedback')}
+                            delay={350}
+                        />
+                    </SettingSection>
+
+                    <SettingSection title="DATA">
+                        <SettingRow
+                            iconName="download"
+                            label="Export Data"
+                            accentColor="#00E5BE"
+                            delay={400}
+                        />
+                        <View style={styles.rowDivider} />
+                        <SettingRow
+                            iconName="upload-cloud"
+                            label="Backup to Cloud"
+                            accentColor="#6C63FF"
+                            onPress={!isSignedIn ? handleGoogleSignIn : undefined}
+                            delay={450}
+                        />
+                    </SettingSection>
+
+                    {isSignedIn && (
+                        <SettingSection title="SESSION">
+                            <SettingRow
+                                iconName="log-out"
+                                label="Sign Out"
+                                accentColor="#FF4D2E"
+                                isDestructive
+                                onPress={handleSignOut}
+                                delay={500}
+                            />
+                        </SettingSection>
+                    )}
+
+                    {/* App version */}
+                    <View style={styles.appVersion}>
+                        <MaterialCommunityIcons name="lightning-bolt" size={12} color="#333" />
+                        <Text style={styles.appVersionText}>FITNESS PARTNER · v1.0.0</Text>
+                    </View>
+                </View>
+            </ScrollView>
+        </View>
+    );
 }
 
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: "#F5F5F5",
-        paddingHorizontal: 16,
+        backgroundColor: '#0D0D0F',
     },
-    header: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: 20,
-        backgroundColor: 'white',
-        borderRadius: 12,
-        marginVertical: 10,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+    scroll: {
+        paddingBottom: 100,
+    },
+
+    // Header
+    headerGradient: {
+        paddingHorizontal: 22,
+        paddingBottom: 28,
     },
     headerContent: {
-        flexDirection: 'column',
+        paddingTop: 12,
     },
-    headerTitle: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#333',
+    pageBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        marginBottom: 16,
     },
-    headerSubtitle: {
-        fontSize: 14,
-        color: '#888',
+    pageBadgeText: {
+        color: '#FF4D2E',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.5,
+    },
+
+    // Profile row
+    profileRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 16,
+        marginBottom: 22,
+    },
+    avatarWrapper: {
+        position: 'relative',
+    },
+    avatarImage: {
+        width: 64,
+        height: 64,
+        borderRadius: 20,
+    },
+    avatarGradient: {
+        width: 64,
+        height: 64,
+        borderRadius: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    avatarInitials: {
+        color: '#fff',
+        fontSize: 22,
+        fontWeight: '900',
+        letterSpacing: -0.5,
+    },
+    onlineDot: {
+        position: 'absolute',
+        bottom: 2,
+        right: 2,
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        backgroundColor: '#00E5BE',
+        borderWidth: 2,
+        borderColor: '#0D0D0F',
+    },
+    identityInfo: {
+        flex: 1,
+        gap: 3,
+    },
+    displayName: {
+        color: '#fff',
+        fontSize: 20,
+        fontWeight: '900',
+        letterSpacing: -0.3,
+    },
+    displayEmail: {
+        color: '#555',
+        fontSize: 12,
+        fontWeight: '400',
+    },
+    verifiedBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
         marginTop: 4,
     },
-    section: {
-        backgroundColor: 'white',
-        borderRadius: 12,
-        marginVertical: 10,
-        paddingVertical: 8,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.1,
-        shadowRadius: 3,
-        elevation: 2,
+    verifiedText: {
+        color: '#00E5BE',
+        fontSize: 11,
+        fontWeight: '700',
     },
-    sectionTitle: {
+
+    // Mini stats
+    miniStats: {
+        flexDirection: 'row',
+        backgroundColor: 'rgba(255,255,255,0.04)',
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.06)',
+        overflow: 'hidden',
+    },
+    miniStat: {
+        flex: 1,
+        alignItems: 'center',
+        paddingVertical: 14,
+        borderRightWidth: 1,
+        borderRightColor: 'rgba(255,255,255,0.05)',
+    },
+    miniStatValue: {
+        fontSize: 20,
+        fontWeight: '900',
+        letterSpacing: -0.5,
+    },
+    miniStatLabel: {
+        color: '#444',
+        fontSize: 9,
+        fontWeight: '700',
+        letterSpacing: 0.8,
+        marginTop: 2,
+    },
+
+    // Sign-in prompt
+    signInPrompt: {
+        margin: 20,
+        backgroundColor: '#16161A',
+        borderRadius: 22,
+        padding: 22,
+        alignItems: 'center',
+        gap: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,77,46,0.15)',
+    },
+    signInIconBg: {
+        width: 52,
+        height: 52,
+        borderRadius: 16,
+        backgroundColor: 'rgba(255,77,46,0.12)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 4,
+    },
+    signInTitle: {
+        color: '#fff',
+        fontSize: 17,
+        fontWeight: '800',
+    },
+    signInSubtext: {
+        color: '#555',
+        fontSize: 13,
+        textAlign: 'center',
+        lineHeight: 20,
+        marginBottom: 6,
+    },
+    googleBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        backgroundColor: '#1E1E26',
+        borderRadius: 14,
+        paddingVertical: 14,
+        paddingHorizontal: 20,
+        width: '100%',
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+    },
+    googleBtnText: {
+        color: '#fff',
         fontSize: 14,
-        fontWeight: '500',
-        color: '#888',
-        paddingHorizontal: 16,
-        paddingVertical: 12,
+        fontWeight: '700',
     },
-    settingItem: {
+
+    // Settings
+    settingsContainer: {
+        paddingHorizontal: 20,
+        paddingTop: 8,
+        gap: 6,
+    },
+    section: {
+        gap: 6,
+        marginBottom: 8,
+    },
+    sectionLabel: {
+        color: '#333',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.5,
+        paddingLeft: 4,
+        marginBottom: 2,
+    },
+    sectionCard: {
+        backgroundColor: '#16161A',
+        borderRadius: 20,
+        overflow: 'hidden',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+    },
+    settingRow: {
         flexDirection: 'row',
         alignItems: 'center',
         paddingVertical: 14,
         paddingHorizontal: 16,
+        gap: 14,
     },
-    iconContainer: {
-        width: 32,
-        height: 32,
-        borderRadius: 8,
-        justifyContent: 'center',
+    settingIconBg: {
+        width: 36,
+        height: 36,
+        borderRadius: 12,
         alignItems: 'center',
-        marginRight: 12,
+        justifyContent: 'center',
+        flexShrink: 0,
     },
-    settingText: {
+    settingLabel: {
         flex: 1,
-        fontSize: 16,
-        color: '#333',
+        color: '#EFEFEF',
+        fontSize: 14,
+        fontWeight: '600',
     },
-    divider: {
+    rowDivider: {
         height: 1,
-        backgroundColor: '#EEE',
-        marginLeft: 60,
+        backgroundColor: 'rgba(255,255,255,0.04)',
+        marginLeft: 66,
+    },
+
+    // Footer
+    appVersion: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        paddingTop: 20,
+        paddingBottom: 8,
+    },
+    appVersionText: {
+        color: '#2A2A36',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.5,
     },
 });
