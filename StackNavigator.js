@@ -2,7 +2,6 @@ import { NavigationContainer, useNavigationContainerRef } from '@react-navigatio
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
-import { ClerkLoaded, ClerkProvider } from '@clerk/clerk-expo';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRef, useEffect, useState } from 'react';
 import { BlurView } from 'expo-blur';
@@ -23,12 +22,9 @@ import Days from './screens/Days';
 import UserProfile from './components/userProfile';
 import Feedback from './components/Feedback';
 import RestMiniTimer from './components/RestMiniTimer';
-import { TokenCache } from './auth/auth';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
-
-const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
 // ── Tab config ────────────────────────────────────────────────
 const TABS = [
@@ -241,48 +237,44 @@ export default function AppNavigation() {
     };
 
     return (
-        <ClerkProvider tokenCache={TokenCache} publishableKey={publishableKey}>
-            <ClerkLoaded>
-                <NavigationContainer
-                    ref={navigationRef}
-                    onReady={syncCurrentRoute}
-                    onStateChange={syncCurrentRoute}
-                >
-                    <Stack.Navigator initialRouteName="Welcome">
-                        <Stack.Screen
-                            name="Welcome"
-                            component={WelcomeScreen}
-                            options={{ headerShown: false, animationTypeForReplace: 'pop' }}
-                        />
-                        <Stack.Screen
-                            name="Onboarding"
-                            component={OnboardingScreen}
-                            options={{ headerShown: false }}
-                        />
-                        <Stack.Screen
-                            name="App"
-                            component={MainTabs}
-                            options={{ headerShown: false, gestureEnabled: false }}
-                        />
-                        <Stack.Screen name="Workout" component={WorkoutScreen} options={{ headerShown: false }} />
-                        <Stack.Screen name="Fit" component={FitScreen} options={{ headerShown: false }} />
-                        <Stack.Screen name="Rest" component={RestScreen} options={{ headerShown: false }} />
-                        <Stack.Screen
-                            name="Celebration"
-                            component={CelebrationScreen}
-                            options={{ headerShown: false, gestureEnabled: false }}
-                        />
-                        <Stack.Screen name="Days" component={Days} options={{ headerShown: false }} />
-                        <Stack.Screen name="userProfile" component={UserProfile} options={{ headerShown: false }} />
-                        <Stack.Screen name="feedback" component={Feedback} options={{ headerShown: false }} />
-                    </Stack.Navigator>
-                    <RestMiniTimer
-                        currentRouteName={currentRouteName}
-                        navigationRef={navigationRef}
-                    />
-                </NavigationContainer>
-            </ClerkLoaded>
-        </ClerkProvider>
+        <NavigationContainer
+            ref={navigationRef}
+            onReady={syncCurrentRoute}
+            onStateChange={syncCurrentRoute}
+        >
+            <Stack.Navigator initialRouteName="Welcome">
+                <Stack.Screen
+                    name="Welcome"
+                    component={WelcomeScreen}
+                    options={{ headerShown: false, animationTypeForReplace: 'pop' }}
+                />
+                <Stack.Screen
+                    name="Onboarding"
+                    component={OnboardingScreen}
+                    options={{ headerShown: false }}
+                />
+                <Stack.Screen
+                    name="App"
+                    component={MainTabs}
+                    options={{ headerShown: false, gestureEnabled: false }}
+                />
+                <Stack.Screen name="Workout" component={WorkoutScreen} options={{ headerShown: false }} />
+                <Stack.Screen name="Fit" component={FitScreen} options={{ headerShown: false }} />
+                <Stack.Screen name="Rest" component={RestScreen} options={{ headerShown: false }} />
+                <Stack.Screen
+                    name="Celebration"
+                    component={CelebrationScreen}
+                    options={{ headerShown: false, gestureEnabled: false }}
+                />
+                <Stack.Screen name="Days" component={Days} options={{ headerShown: false }} />
+                <Stack.Screen name="userProfile" component={UserProfile} options={{ headerShown: false }} />
+                <Stack.Screen name="feedback" component={Feedback} options={{ headerShown: false }} />
+            </Stack.Navigator>
+            <RestMiniTimer
+                currentRouteName={currentRouteName}
+                navigationRef={navigationRef}
+            />
+        </NavigationContainer>
     );
 }
 

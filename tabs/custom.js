@@ -23,7 +23,7 @@ import axios from 'axios';
 import Workouts from '../data/exercises';
 import API_BASE_URL from '../constants/api';
 
-const FOLDERS_STORAGE_KEY = 'custom_workout_folders_v1';
+const FOLDERS_STORAGE_KEY_PREFIX = 'custom_workout_folders_v1';
 const LEGACY_EXERCISES_KEY = 'custom_workout_exercises_v1';
 const normalizeText = (value = '') => String(value).trim().toLowerCase();
 
@@ -212,16 +212,21 @@ const deleteFolderFromDatabase = async (clerkUserId, folderId) => {
     });
 };
 
-const writeFolders = async (folders) => {
-    await writeValueByKey(FOLDERS_STORAGE_KEY, JSON.stringify(folders));
+const getFoldersStorageKey = (clerkUserId) =>
+    clerkUserId ? `${FOLDERS_STORAGE_KEY_PREFIX}_${clerkUserId}` : `${FOLDERS_STORAGE_KEY_PREFIX}_guest`;
+
+const writeFolders = async (storageKey, folders) => {
+    await writeValueByKey(storageKey, JSON.stringify(folders));
 };
 
-const readFoldersWithMigration = async () => {
-    const rawFolders = await readValueByKey(FOLDERS_STORAGE_KEY);
+const readFoldersWithMigration = async (storageKey, allowLegacyMigration = false) => {
+    const rawFolders = await readValueByKey(storageKey);
     const parsedFolders = safeParseArray(rawFolders);
 
     const sanitizedFolders = parsedFolders.map(sanitizeFolder).filter(Boolean);
     if (sanitizedFolders.length) return sanitizedFolders;
+
+    if (!allowLegacyMigration) return [];
 
     const rawLegacy = await readValueByKey(LEGACY_EXERCISES_KEY);
     const parsedLegacy = safeParseArray(rawLegacy);
@@ -238,7 +243,7 @@ const readFoldersWithMigration = async () => {
         createdAt: new Date().toISOString(),
     };
 
-    await writeFolders([migratedFolder]);
+    await writeFolders(storageKey, [migratedFolder]);
     await removeValueByKey(LEGACY_EXERCISES_KEY);
     return [migratedFolder];
 };
@@ -407,6 +412,7 @@ export default function Custom() {
     const { user } = useUser();
     const clerkUserId = user?.id || null;
     const navigation = useNavigation();
+    const foldersStorageKey = useMemo(() => getFoldersStorageKey(clerkUserId), [clerkUserId]);
 
     const [folders, setFolders] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -425,7 +431,7 @@ export default function Custom() {
 
         const load = async () => {
             setLoading(true);
-            const storedFolders = await readFoldersWithMigration();
+            const storedFolders = await readFoldersWithMigration(foldersStorageKey, !clerkUserId);
 
             if (!clerkUserId) {
                 if (!isMounted) return;
@@ -453,7 +459,7 @@ export default function Custom() {
 
                 if (!isMounted) return;
                 setFolders(resolvedFolders);
-                await writeFolders(resolvedFolders);
+                await writeFolders(foldersStorageKey, resolvedFolders);
             } catch (error) {
                 console.error('Failed to load folders from database:', error);
                 if (!isMounted) return;
@@ -473,7 +479,7 @@ export default function Custom() {
         return () => {
             isMounted = false;
         };
-    }, [clerkUserId]);
+    }, [clerkUserId, foldersStorageKey]);
 
     const libraryExercises = useMemo(() => {
         return Workouts.map((item) => ({
@@ -693,7 +699,7 @@ export default function Custom() {
             const nextFolders = [newFolder, ...folders];
             setFolders(nextFolders);
             setExpandedFolderId(newFolder.id);
-            await writeFolders(nextFolders);
+            await writeFolders(foldersStorageKey, nextFolders);
             closeBuilderModal();
             return;
         }
@@ -738,7 +744,7 @@ export default function Custom() {
         );
 
         setFolders(nextFolders);
-        await writeFolders(nextFolders);
+        await writeFolders(foldersStorageKey, nextFolders);
 
         if (builderMode === 'edit') {
             setExpandedFolderId(activeFolderId);
@@ -769,7 +775,7 @@ export default function Custom() {
                     if (expandedFolderId === folderId) {
                         setExpandedFolderId(null);
                     }
-                    await writeFolders(nextFolders);
+                    await writeFolders(foldersStorageKey, nextFolders);
                 },
             },
         ]);
