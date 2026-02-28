@@ -9,6 +9,7 @@ import { BlurView } from 'expo-blur';
 
 // Screens
 import WelcomeScreen from './screens/WelcomeScreen';
+import OnboardingScreen from './screens/OnboardingScreen';
 import Main from './tabs/main';
 import Records from './tabs/records';
 import Exercises from './tabs/exercises';
@@ -252,6 +253,11 @@ export default function AppNavigation() {
                             name="Welcome"
                             component={WelcomeScreen}
                             options={{ headerShown: false, animationTypeForReplace: 'pop' }}
+                        />
+                        <Stack.Screen
+                            name="Onboarding"
+                            component={OnboardingScreen}
+                            options={{ headerShown: false }}
                         />
                         <Stack.Screen
                             name="App"

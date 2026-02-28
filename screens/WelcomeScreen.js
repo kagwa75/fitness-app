@@ -12,8 +12,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { useEffect, useRef } from 'react';
+import { useContext, useEffect, useRef } from 'react';
 import { images } from '../constants';
+import { FitnessItems } from '../Context';
 
 const { width, height } = Dimensions.get('window');
 
@@ -47,6 +48,7 @@ const StatPill = ({ icon, value, label, delay, accentColor }) => {
 
 export default function Welcome() {
     const navigation = useNavigation();
+    const { isOnboardingComplete, isUserProfileHydrated } = useContext(FitnessItems);
 
     // Animation refs
     const bgScale = useRef(new Animated.Value(1.12)).current;
@@ -105,6 +107,16 @@ export default function Welcome() {
         Animated.spring(ctaBtnScale, { toValue: 0.96, useNativeDriver: true, tension: 300 }).start();
     const handlePressOut = () =>
         Animated.spring(ctaBtnScale, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
+
+    const handleContinue = () => {
+        if (!isUserProfileHydrated) return;
+        if (isOnboardingComplete) {
+            navigation.navigate('App');
+            return;
+        }
+
+        navigation.navigate('Onboarding');
+    };
 
     return (
         <View style={styles.container}>
@@ -203,10 +215,11 @@ export default function Welcome() {
                         ]}
                     >
                         <TouchableOpacity
-                            onPress={() => navigation.navigate('App')}
+                            onPress={handleContinue}
                             onPressIn={handlePressIn}
                             onPressOut={handlePressOut}
                             activeOpacity={1}
+                            disabled={!isUserProfileHydrated}
                         >
                             <Animated.View style={{ transform: [{ scale: ctaBtnScale }] }}>
                                 <LinearGradient
@@ -215,7 +228,9 @@ export default function Welcome() {
                                     end={{ x: 1, y: 0 }}
                                     style={styles.ctaBtn}
                                 >
-                                    <Text style={styles.ctaBtnText}>GET STARTED</Text>
+                                    <Text style={styles.ctaBtnText}>
+                                        {isOnboardingComplete ? 'CONTINUE' : 'SET UP PROFILE'}
+                                    </Text>
                                     <View style={styles.ctaArrow}>
                                         <Feather name="arrow-right" size={18} color="#FF4D2E" />
                                     </View>
@@ -225,13 +240,16 @@ export default function Welcome() {
 
                         {/* Secondary action */}
                         <TouchableOpacity
-                            onPress={() => navigation.navigate('App')}
+                            onPress={handleContinue}
                             style={styles.secondaryBtn}
                             activeOpacity={0.7}
+                            disabled={!isUserProfileHydrated}
                         >
                             <Text style={styles.secondaryBtnText}>
-                                Already have an account?{' '}
-                                <Text style={{ color: '#FF4D2E', fontWeight: '700' }}>Sign in</Text>
+                                {isOnboardingComplete ? 'Profile set already? ' : 'Need personalization first? '}
+                                <Text style={{ color: '#FF4D2E', fontWeight: '700' }}>
+                                    {isOnboardingComplete ? 'Go to app' : 'Complete onboarding'}
+                                </Text>
                             </Text>
                         </TouchableOpacity>
                     </Animated.View>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import {
     Alert,
     KeyboardAvoidingView,
@@ -12,6 +12,8 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -241,7 +243,7 @@ const readFoldersWithMigration = async () => {
     return [migratedFolder];
 };
 
-const FolderCard = ({ folder, isExpanded, onToggle, onRename, onEdit, onDelete }) => (
+const FolderCard = ({ folder, isExpanded, onToggle, onRename, onEdit, onDelete, onStart }) => (
     <View style={styles.folderCard}>
         <TouchableOpacity onPress={onToggle} activeOpacity={0.85} style={styles.folderHeaderRow}>
             <View style={styles.folderIconWrap}>
@@ -283,6 +285,24 @@ const FolderCard = ({ folder, isExpanded, onToggle, onRename, onEdit, onDelete }
                 )}
 
                 <View style={styles.folderActionsRow}>
+                    <TouchableOpacity
+                        onPress={() => onStart(folder)}
+                        activeOpacity={0.9}
+                        style={styles.folderStartBtn}
+                        disabled={folder.exercises.length === 0}
+                    >
+                        <LinearGradient
+                            colors={folder.exercises.length ? ['#FF4D2E', '#FF2800'] : ['#3A3A4F', '#2B2B3C']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.folderStartBtnGradient}
+                        >
+                            <MaterialCommunityIcons name="whistle" size={14} color="#fff" />
+                            <Text style={styles.folderStartBtnText}>Start Workout</Text>
+                            <Feather name="arrow-right" size={13} color="#fff" />
+                        </LinearGradient>
+                    </TouchableOpacity>
+
                     <TouchableOpacity onPress={() => onRename(folder)} activeOpacity={0.85} style={styles.folderActionBtn}>
                         <Feather name="edit-3" size={13} color="#00C2FF" />
                         <Text style={styles.folderActionText}>Rename</Text>
@@ -386,6 +406,7 @@ const SelectedExerciseEditorRow = ({ exercise, index, onRemove, onChange }) => (
 export default function Custom() {
     const { user } = useUser();
     const clerkUserId = user?.id || null;
+    const navigation = useNavigation();
 
     const [folders, setFolders] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -499,6 +520,68 @@ export default function Custom() {
         setFolderName('');
         setSearchQuery('');
         setSelectedExercises([]);
+    };
+
+    const btnScale = useRef(new Animated.Value(1)).current;
+    const handlePressIn = () =>
+        Animated.spring(btnScale, { toValue: 0.96, useNativeDriver: true, tension: 300 }).start();
+    const handlePressOut = () =>
+        Animated.spring(btnScale, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
+
+    const mapExercisesForWorkout = (customExercises = []) =>
+        customExercises.map((exercise) => {
+            const repsRaw = String(exercise.reps || '').trim();
+            const setsRaw = String(exercise.sets || '').trim();
+            const isTime = /s$|sec|secs|second|seconds/i.test(repsRaw) || /s$/.test(repsRaw);
+            let duration = null;
+            let sets = null;
+
+            if (isTime) {
+                const num = parseInt(repsRaw.replace(/[^0-9]/g, ''), 10);
+                duration = Number.isFinite(num) && num > 0 ? num : 30;
+            } else {
+                const numSets = parseInt(setsRaw.replace(/[^0-9]/g, ''), 10);
+                sets = Number.isFinite(numSets) && numSets > 0 ? numSets : 3;
+            }
+
+            return {
+                name: exercise.name,
+                target: exercise.target || null,
+                type: duration ? 'time' : 'reps',
+                duration: duration || undefined,
+                sets: sets || undefined,
+            };
+        });
+
+    const startWorkoutFromFolder = (folder) => {
+        if (!folder || !Array.isArray(folder.exercises) || folder.exercises.length === 0) {
+            Alert.alert('No exercises', 'Please create or select a custom workout folder first.');
+            return;
+        }
+
+        const mapped = mapExercisesForWorkout(folder.exercises);
+        if (!mapped.length) {
+            Alert.alert('No exercises', 'This folder does not contain valid exercises yet.');
+            return;
+        }
+
+        navigation.navigate('Fit', {
+            exercises: mapped,
+            dayName: folder.name,
+            totalDays: mapped.length,
+            dayIndex: 0,
+            programKey: `custom-${folder.id}`,
+        });
+    };
+
+    const onStartPress = () => {
+        const startFolder = folders.find((f) => f.id === expandedFolderId) || folders[0] || null;
+        if (!startFolder) {
+            Alert.alert('No exercises', 'Please create or select a custom workout folder first.');
+            return;
+        }
+
+        startWorkoutFromFolder(startFolder);
     };
 
     const closeBuilderModal = () => {
@@ -769,6 +852,7 @@ export default function Custom() {
                                 onRename={openRenameModal}
                                 onEdit={openEditModal}
                                 onDelete={deleteFolder}
+                                onStart={startWorkoutFromFolder}
                             />
                         ))
                     )}
@@ -781,6 +865,29 @@ export default function Custom() {
                     </TouchableOpacity>
                 </ScrollView>
             </SafeAreaView>
+
+            {/* Sticky START button 
+            <View style={styles.stickyBottom}>
+                <TouchableOpacity
+                    onPress={onStartPress}
+                    onPressIn={handlePressIn}
+                    onPressOut={handlePressOut}
+                    activeOpacity={1}
+                >
+                    <Animated.View style={[styles.startBtn, { transform: [{ scale: btnScale }] }]}>
+                        <LinearGradient
+                            colors={['#FF4D2E', '#FF2800']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.startBtnGradient}
+                        >
+                            <MaterialCommunityIcons name="whistle" size={22} color="#fff" />
+                            <Text style={styles.startBtnText}>START WORKOUT</Text>
+                            <Feather name="arrow-right" size={18} color="#fff" />
+                        </LinearGradient>
+                    </Animated.View>
+                </TouchableOpacity>
+            </View>*/}
 
             <Modal
                 visible={isModalVisible}
@@ -1101,6 +1208,23 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: 8,
     },
+    folderStartBtn: {
+        borderRadius: 10,
+        overflow: 'hidden',
+    },
+    folderStartBtnGradient: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 11,
+        paddingVertical: 8,
+    },
+    folderStartBtnText: {
+        color: '#FFFFFF',
+        fontSize: 12,
+        fontWeight: '900',
+        letterSpacing: 0.2,
+    },
     folderActionBtn: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -1394,6 +1518,32 @@ const styles = StyleSheet.create({
     },
     saveFolderText: {
         color: '#041018',
+        fontWeight: '900',
+        fontSize: 13,
+        letterSpacing: 0.4,
+    },
+    stickyBottom: {
+        position: 'absolute',
+        left: 18,
+        right: 18,
+        bottom: 12,
+        zIndex: 30,
+        alignItems: 'center',
+    },
+    startBtn: {
+        borderRadius: 14,
+        overflow: 'hidden',
+    },
+    startBtnGradient: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+    },
+    startBtnText: {
+        color: '#FFFFFF',
         fontWeight: '900',
         fontSize: 13,
         letterSpacing: 0.4,

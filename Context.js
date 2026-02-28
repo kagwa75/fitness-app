@@ -6,6 +6,11 @@ const FitnessItems = createContext();
 
 const DAY_PROGRESS_STORAGE_KEY = "program_day_progress_v1";
 const IN_PROGRESS_WORKOUT_STORAGE_KEY = "in_progress_workout_v1";
+const USER_PROFILE_STORAGE_KEY = "user_onboarding_profile_v1";
+
+const VALID_GENDERS = new Set(["male", "female", "non_binary", "prefer_not_to_say"]);
+const VALID_GOALS = new Set(["lose_weight", "gain_weight", "build_muscle", "maintain_fitness"]);
+const VALID_LEVELS = new Set(["beginner", "intermediate", "advanced"]);
 
 const canUseWebStorage = () =>
   Platform.OS === "web" &&
@@ -108,6 +113,31 @@ const sanitizeInProgressWorkout = (value) => {
   };
 };
 
+const sanitizeUserProfile = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const age = Number(value.age);
+  const weight = Number(value.weight);
+  const gender = String(value.gender || "").trim();
+  const goal = String(value.goal || "").trim();
+  const fitnessLevel = String(value.fitnessLevel || "").trim();
+
+  if (!Number.isInteger(age) || age < 10 || age > 120) return null;
+  if (!Number.isFinite(weight) || weight <= 0 || weight > 500) return null;
+  if (!VALID_GENDERS.has(gender)) return null;
+  if (!VALID_GOALS.has(goal)) return null;
+  if (!VALID_LEVELS.has(fitnessLevel)) return null;
+
+  return {
+    age,
+    weight,
+    gender,
+    goal,
+    fitnessLevel,
+    updatedAt: value.updatedAt || new Date().toISOString(),
+  };
+};
+
 const FitnessContext = ({ children }) => {
   const [completed, setCompleted] = useState([]);
   const [workout, setWorkout] = useState(0);
@@ -115,6 +145,8 @@ const FitnessContext = ({ children }) => {
   const [minutes, setMinutes] = useState(0);
   const [dayProgress, setDayProgress] = useState({});
   const [inProgressWorkout, setInProgressWorkout] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [isUserProfileHydrated, setIsUserProfileHydrated] = useState(false);
   const [restTimer, setRestTimer] = useState({
     isActive: false,
     endAt: null,
@@ -129,6 +161,27 @@ const FitnessContext = ({ children }) => {
       setDayProgress(parsed);
     };
     loadDayProgress();
+  }, []);
+
+  useEffect(() => {
+    const loadUserProfile = async () => {
+      try {
+        const raw = await readValueByKey(USER_PROFILE_STORAGE_KEY);
+        if (!raw) {
+          setUserProfile(null);
+          return;
+        }
+
+        const parsed = JSON.parse(raw);
+        setUserProfile(sanitizeUserProfile(parsed));
+      } catch {
+        setUserProfile(null);
+      } finally {
+        setIsUserProfileHydrated(true);
+      }
+    };
+
+    loadUserProfile();
   }, []);
 
   useEffect(() => {
@@ -206,6 +259,22 @@ const FitnessContext = ({ children }) => {
     setInProgressWorkout(null);
     persistInProgressWorkout(null);
   }, [persistInProgressWorkout]);
+
+  const saveUserProfile = useCallback((payload) => {
+    const sanitized = sanitizeUserProfile(payload);
+    if (!sanitized) return false;
+
+    setUserProfile(sanitized);
+    writeValueByKey(USER_PROFILE_STORAGE_KEY, JSON.stringify(sanitized));
+    return true;
+  }, []);
+
+  const clearUserProfile = useCallback(() => {
+    setUserProfile(null);
+    removeValueByKey(USER_PROFILE_STORAGE_KEY);
+  }, []);
+
+  const isOnboardingComplete = useMemo(() => !!userProfile, [userProfile]);
 
   const startRestTimer = useCallback((seconds = 15, forceRestart = true) => {
     const parsed = Number(seconds);
@@ -300,6 +369,11 @@ const FitnessContext = ({ children }) => {
         inProgressWorkout,
         saveInProgressWorkout,
         clearInProgressWorkout,
+        userProfile,
+        saveUserProfile,
+        clearUserProfile,
+        isOnboardingComplete,
+        isUserProfileHydrated,
         restTimer,
         startRestTimer,
         addRestTime,
