@@ -17,8 +17,25 @@ import { useUser } from '@clerk/clerk-expo';
 import { FitnessItems } from '../Context';
 import { LinearGradient } from 'expo-linear-gradient';
 import axios from 'axios';
+import API_BASE_URL from '../constants/api';
 
 const { width, height } = Dimensions.get('window');
+const REST_BETWEEN_EXERCISES_SECONDS = 15;
+
+const toNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeCompletedExercises = (list) =>
+    Array.isArray(list)
+        ? list.filter(
+              (exercise) =>
+                  exercise &&
+                  typeof exercise === 'object' &&
+                  String(exercise.name || '').trim()
+          )
+        : [];
 
 // Animated progress dots
 const ProgressDots = ({ total, current }) => (
@@ -47,9 +64,26 @@ const FitScreen = () => {
     const route = useRoute();
     const navigation = useNavigation();
     const { user } = useUser();
-    const { exercises } = route.params;
-    const [index, setIndex] = useState(0);
+    const {
+        exercises = [],
+        dayIndex,
+        dayName,
+        totalDays,
+        programKey,
+        resumeSession,
+    } = route.params || {};
+    const initialIndex = (() => {
+        const savedIndex = Number.isInteger(resumeSession?.currentIndex)
+            ? resumeSession.currentIndex
+            : 0;
+        const maxIndex = Math.max(0, exercises.length - 1);
+        return Math.min(Math.max(0, savedIndex), maxIndex);
+    })();
+
+    const [index, setIndex] = useState(initialIndex);
     const current = exercises[index];
+    const allowExitRef = useRef(false);
+    const hydratedResumeRef = useRef(false);
 
     const {
         completed,
@@ -57,11 +91,21 @@ const FitScreen = () => {
         setCalories,
         setMinutes,
         setWorkout,
+        markDayCompleted,
+        saveInProgressWorkout,
+        clearInProgressWorkout,
+        startRestTimer,
+        stopRestTimer,
     } = useContext(FitnessItems);
 
-    const [timeLeft, setTimeLeft] = useState(
-        current?.type === 'time' ? current.duration : 0
-    );
+    const [timeLeft, setTimeLeft] = useState(() => {
+        const initialExercise = exercises[initialIndex];
+        if (initialExercise?.type !== 'time') return 0;
+
+        const savedTimeLeft = toNumber(resumeSession?.currentTimeLeft, -1);
+        if (savedTimeLeft > 0) return savedTimeLeft;
+        return toNumber(initialExercise.duration, 0);
+    });
 
     const gifOpacity = useRef(new Animated.Value(0)).current;
     const gifScale = useRef(new Animated.Value(0.95)).current;
@@ -87,6 +131,290 @@ const FitScreen = () => {
 
     useEffect(() => { animateIn(); }, [index]);
 
+    useEffect(() => {
+        if (hydratedResumeRef.current) return;
+        hydratedResumeRef.current = true;
+
+        if (!resumeSession) return;
+        setCompleted(normalizeCompletedExercises(resumeSession.completedExercises));
+    }, [resumeSession, setCompleted]);
+
+    const mapExerciseForStorage = (exercise) => {
+        const durationSeconds = exercise?.type === 'time' ? toNumber(exercise.duration, 0) : null;
+        const sets = exercise?.type === 'reps' ? toNumber(exercise.sets, 0) : null;
+        const caloriesBurned = exercise?.type === 'time'
+            ? (durationSeconds / 60) * 8
+            : sets * 2.5;
+
+        return {
+            name: String(exercise?.name || '').trim(),
+            type: exercise?.type || 'reps',
+            target: exercise?.target || null,
+            durationSeconds,
+            sets,
+            caloriesBurned,
+        };
+    };
+
+    const buildWorkoutPayload = (allExercises) => {
+        const workoutExercises = (allExercises || [])
+            .map(mapExerciseForStorage)
+            .filter((exercise) => exercise.name);
+
+        const summary = workoutExercises.reduce(
+            (acc, exercise) => {
+                acc.totalExercises += 1;
+                acc.totalCaloriesBurned += toNumber(exercise.caloriesBurned, 0);
+                acc.totalDurationSeconds += toNumber(exercise.durationSeconds, 0);
+                return acc;
+            },
+            { totalExercises: 0, totalCaloriesBurned: 0, totalDurationSeconds: 0 }
+        );
+
+        return { workoutExercises, summary };
+    };
+
+    const normalizeSessionSummary = (session) => {
+        const rawWorkoutData = session?.workoutData;
+        let parsedWorkoutData = rawWorkoutData;
+        if (typeof rawWorkoutData === 'string') {
+            try {
+                parsedWorkoutData = JSON.parse(rawWorkoutData);
+            } catch {
+                parsedWorkoutData = {};
+            }
+        }
+
+        const rawSummary = parsedWorkoutData?.summary || {};
+        return {
+            totalExercises: toNumber(session?.totalExercises, toNumber(rawSummary.totalExercises, 0)),
+            totalCaloriesBurned: toNumber(session?.totalCaloriesBurned, toNumber(rawSummary.totalCaloriesBurned, 0)),
+            totalDurationSeconds: toNumber(session?.totalDurationSeconds, toNumber(rawSummary.totalDurationSeconds, 0)),
+        };
+    };
+
+    const fetchPreviousBestStats = async () => {
+        if (!user?.id) {
+            return { totalExercises: 0, totalCaloriesBurned: 0, totalDurationSeconds: 0 };
+        }
+
+        try {
+            const response = await axios.get(`${API_BASE_URL}/users/workouts`, {
+                params: { clerkUserId: user.id },
+            });
+            const sessions = Array.isArray(response.data) ? response.data : [];
+
+            return sessions.reduce(
+                (best, session) => {
+                    const summary = normalizeSessionSummary(session);
+                    return {
+                        totalExercises: Math.max(best.totalExercises, summary.totalExercises),
+                        totalCaloriesBurned: Math.max(best.totalCaloriesBurned, summary.totalCaloriesBurned),
+                        totalDurationSeconds: Math.max(best.totalDurationSeconds, summary.totalDurationSeconds),
+                    };
+                },
+                { totalExercises: 0, totalCaloriesBurned: 0, totalDurationSeconds: 0 }
+            );
+        } catch (error) {
+            console.error('Failed to read previous workout records:', error);
+            return { totalExercises: 0, totalCaloriesBurned: 0, totalDurationSeconds: 0 };
+        }
+    };
+
+    const buildPersonalRecords = (summary, previousBest) => {
+        const broken = [];
+
+        if (summary.totalExercises > previousBest.totalExercises) {
+            broken.push('Most exercises completed');
+        }
+
+        if (summary.totalDurationSeconds > previousBest.totalDurationSeconds) {
+            broken.push('Longest workout duration');
+        }
+
+        if (summary.totalCaloriesBurned > previousBest.totalCaloriesBurned) {
+            broken.push('Highest calories burned');
+        }
+
+        return broken;
+    };
+
+    const saveInProgressToBackend = async (payload) => {
+        if (!user?.id) return;
+
+        try {
+            await axios.post(`${API_BASE_URL}/users/in-progress`, {
+                clerkUserId: user.id,
+                workout: payload,
+            });
+        } catch (error) {
+            console.error('Failed to save in-progress workout to backend:', error);
+        }
+    };
+
+    const clearInProgressFromBackend = async () => {
+        if (!user?.id) return;
+
+        try {
+            await axios.delete(`${API_BASE_URL}/users/in-progress`, {
+                data: { clerkUserId: user.id },
+            });
+        } catch (error) {
+            console.error('Failed to clear in-progress workout from backend:', error);
+        }
+    };
+
+    const saveWorkoutObject = async (allExercises) => {
+        const { workoutExercises, summary } = buildWorkoutPayload(allExercises);
+        if (!workoutExercises.length) {
+            return { workoutExercises: [], summary, personalRecords: [] };
+        }
+
+        let personalRecords = [];
+        if (user?.id) {
+            const previousBest = await fetchPreviousBestStats();
+            personalRecords = buildPersonalRecords(summary, previousBest);
+        }
+
+        try {
+            if (!user?.id) {
+                return { workoutExercises, summary, personalRecords };
+            }
+
+            await axios.post(`${API_BASE_URL}/users/workouts`, {
+                clerkUserId: user.id,
+                exercises: workoutExercises,
+                summary,
+            });
+        } catch (error) {
+            console.error('Failed to save workout object:', error);
+            Alert.alert('Error', error.response?.data?.message || 'Failed to save workout');
+        }
+
+        return { workoutExercises, summary, personalRecords };
+    };
+
+    const finishWorkout = async (allExercises) => {
+        const doneExercises = Array.isArray(allExercises) ? allExercises : [...completed, current];
+        const result = await saveWorkoutObject(doneExercises);
+
+        if (programKey && Number.isInteger(dayIndex)) {
+            markDayCompleted(programKey, dayIndex);
+        }
+
+        clearInProgressWorkout();
+        await clearInProgressFromBackend();
+        stopRestTimer();
+        allowExitRef.current = true;
+        navigation.replace('Celebration', {
+            summary: result.summary,
+            personalRecords: result.personalRecords,
+            dayName: dayName || null,
+            dayNumber: Number.isInteger(dayIndex) ? dayIndex + 1 : null,
+            totalDays: Number.isInteger(totalDays) ? totalDays : exercises.length,
+        });
+    };
+
+    const handleNext = () => {
+        if (index + 1 < exercises.length) {
+            startRestTimer(REST_BETWEEN_EXERCISES_SECONDS, true);
+            navigation.navigate('Rest', { duration: REST_BETWEEN_EXERCISES_SECONDS });
+            setTimeout(() => {
+                setIndex(index + 1);
+                const next = exercises[index + 1];
+                if (next?.type === 'time') setTimeLeft(next.duration);
+            }, 2000);
+        } else {
+            const allExercises = [...completed, current];
+            finishWorkout(allExercises);
+        }
+    };
+
+    const handlePrevious = () => {
+        if (index === 0) return;
+        startRestTimer(REST_BETWEEN_EXERCISES_SECONDS, true);
+        navigation.navigate('Rest', { duration: REST_BETWEEN_EXERCISES_SECONDS });
+        setTimeout(() => setIndex(index - 1), 2000);
+    };
+
+    const handleSkip = async () => {
+        if (index + 1 >= exercises.length) {
+            clearInProgressWorkout();
+            await clearInProgressFromBackend();
+            stopRestTimer();
+            allowExitRef.current = true;
+            navigation.navigate('App');
+            return;
+        }
+        startRestTimer(REST_BETWEEN_EXERCISES_SECONDS, true);
+        navigation.navigate('Rest', { duration: REST_BETWEEN_EXERCISES_SECONDS });
+        setTimeout(() => {
+            setIndex(index + 1);
+            const next = exercises[index + 1];
+            if (next?.type === 'time') setTimeLeft(next.duration);
+        }, 2000);
+    };
+
+    const openQuitPrompt = (onQuitConfirmed) => {
+        const buildInProgressPayload = () => ({
+            clerkUserId: user?.id || null,
+            programKey: String(programKey || '').trim(),
+            dayIndex: Number.isInteger(dayIndex) ? dayIndex : null,
+            dayName: dayName || null,
+            totalDays: Number.isInteger(totalDays) ? totalDays : exercises.length,
+            exercises,
+            completedExercises: normalizeCompletedExercises(completed),
+            currentIndex: index,
+            currentTimeLeft: current?.type === 'time' ? toNumber(timeLeft, 0) : null,
+            savedAt: new Date().toISOString(),
+        });
+
+        Alert.alert('Pause workout?', 'Why do you want to leave this workout?', [
+            {
+                text: 'Away for a while',
+                onPress: async () => {
+                    const payload = buildInProgressPayload();
+                    saveInProgressWorkout(payload);
+                    await saveInProgressToBackend(payload);
+                    stopRestTimer();
+                    allowExitRef.current = true;
+                    navigation.navigate('App');
+                },
+            },
+            {
+                text: 'Quit',
+                style: 'destructive',
+                onPress: async () => {
+                    clearInProgressWorkout();
+                    await clearInProgressFromBackend();
+                    stopRestTimer();
+                    setCompleted([]);
+                    allowExitRef.current = true;
+                    if (typeof onQuitConfirmed === 'function') {
+                        onQuitConfirmed();
+                        return;
+                    }
+                    navigation.navigate('App');
+                },
+            },
+            {
+                text: 'Resume',
+                style: 'cancel',
+            },
+        ]);
+    };
+
+    // Intercept back gestures/buttons and ask why the user wants to quit.
+    useEffect(() => {
+        const unsubscribe = navigation.addListener('beforeRemove', (event) => {
+            if (allowExitRef.current) return;
+            event.preventDefault();
+            openQuitPrompt(() => navigation.dispatch(event.data.action));
+        });
+
+        return unsubscribe;
+    }, [navigation, index, exercises.length]);
+
     // Timer logic
     useEffect(() => {
         if (current?.type !== 'time') return;
@@ -94,14 +422,26 @@ const FitScreen = () => {
             setTimeLeft((prev) => {
                 if (prev <= 1) {
                     clearInterval(timer);
-                    handleNext();
+
+                    const allExercises = [...completed, current];
+                    setCompleted(allExercises);
+                    setWorkout((w) => w + 1);
+                    setMinutes((m) => m + 2.5);
+                    setCalories((c) => c + 6.3);
+
+                    if (index + 1 < exercises.length) {
+                        handleNext();
+                    } else {
+                        finishWorkout(allExercises);
+                    }
+
                     return 0;
                 }
                 return prev - 1;
             });
         }, 1000);
         return () => clearInterval(timer);
-    }, [timeLeft, index]);
+    }, [timeLeft, index, current]);
 
     // Pulse timer when low
     useEffect(() => {
@@ -114,74 +454,18 @@ const FitScreen = () => {
         }
     }, [timeLeft]);
 
-    const handleNext = () => {
-        if (index + 1 < exercises.length) {
-            navigation.navigate('Rest');
-            setTimeout(() => {
-                setCompleted((prev) => [...prev, current]);
-                setWorkout((w) => w + 1);
-                setMinutes((m) => m + 2.5);
-                setCalories((c) => c + 6.3);
-                setIndex(index + 1);
-                const next = exercises[index + 1];
-                if (next?.type === 'time') setTimeLeft(next.duration);
-            }, 2000);
-        } else {
-            finishWorkout();
-        }
-    };
-
-    const saveWorkout = async (exercise) => {
-        if (!user) return;
-        try {
-            await axios.post('http://192.168.64.194:3000/users/workouts', {
-                clerkUserId: user.id,
-                exerciseName: exercise.name,
-                duration: exercise.type === 'time' ? exercise.duration : null,
-                sets: exercise.type === 'reps' ? exercise.sets : null,
-                caloriesBurned:
-                    exercise.type === 'time'
-                        ? (exercise.duration / 60) * 8
-                        : exercise.sets * 2.5,
-            });
-        } catch (error) {
-            console.error('Failed to save workout:', error);
-            Alert.alert('Error', error.response?.data?.message || 'Failed to save workout');
-        }
-    };
-
-    const finishWorkout = async () => {
-        const allExercises = [...completed, current];
-        await Promise.all(allExercises.map(saveWorkout));
-        navigation.navigate('App');
-    };
-
-    const handlePrevious = () => {
-        if (index === 0) return;
-        navigation.navigate('Rest');
-        setTimeout(() => setIndex(index - 1), 2000);
-    };
-
-    const handleSkip = () => {
-        if (index + 1 >= exercises.length) {
-            navigation.navigate('App');
-            return;
-        }
-        navigation.navigate('Rest');
-        setTimeout(() => {
-            setIndex(index + 1);
-            const next = exercises[index + 1];
-            if (next?.type === 'time') setTimeLeft(next.duration);
-        }, 2000);
-    };
-
     const isLast = index + 1 >= exercises.length;
     const isTimeBased = current?.type === 'time';
     const timerColor = timeLeft <= 5 ? '#FF4D2E' : '#00E5BE';
 
     const onDonePress = () => {
-        setCompleted((prev) => [...prev, current]);
-        if (isLast) finishWorkout();
+        const allExercises = [...completed, current];
+        setCompleted(allExercises);
+        setWorkout((w) => w + 1);
+        setMinutes((m) => m + 2.5);
+        setCalories((c) => c + 6.3);
+
+        if (isLast) finishWorkout(allExercises);
         else handleNext();
     };
 
@@ -221,6 +505,11 @@ const FitScreen = () => {
                         {index + 1} / {exercises.length}
                     </Text>
                 </View>
+
+                <TouchableOpacity onPress={() => openQuitPrompt()} style={styles.quitBtn} activeOpacity={0.85}>
+                    <Feather name="x" size={17} color="#fff" />
+                    <Text style={styles.quitBtnText}>Quit</Text>
+                </TouchableOpacity>
             </Animated.View>
 
             <SafeAreaView style={styles.safeArea} edges={['bottom']}>
@@ -359,6 +648,25 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: '700',
         letterSpacing: 0.5,
+    },
+    quitBtn: {
+        position: 'absolute',
+        top: 52,
+        left: 20,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        borderRadius: 18,
+        backgroundColor: 'rgba(0,0,0,0.55)',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.16)',
+    },
+    quitBtnText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: '700',
     },
 
     safeArea: {

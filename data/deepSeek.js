@@ -764,7 +764,7 @@ const fitness = [
     },
     {
         "name": "ABS WORKOUT",
-        category: "waist",
+        category: "abs",
         "image": "https://miro.medium.com/v2/resize:fit:1400/1*6KmBAkdIRmPB91Q9QVBZ2w.jpeg",
         "days": [
             {
@@ -3174,7 +3174,7 @@ const fitness = [
     },
     {
         "name": "LOWER BODY WORKOUT",
-        "category": "lower legs",
+        "category": "legs",
         "image": "https://www.muscletech.com/cdn/shop/articles/img-1710166503329.jpg?v=1731601517",
         "days": [
             {

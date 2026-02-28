@@ -4,7 +4,7 @@ import fity from '../data/deepSeek';
 import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 
 const { width } = Dimensions.get('window');
 
@@ -51,6 +51,13 @@ const AnimatedCard = ({ children, delay = 0, style }) => {
 // Featured (large) card — first item
 const FeaturedCard = ({ item, index, accent, onPress }) => {
     const scaleAnim = useRef(new Animated.Value(1)).current;
+    const [imageLoadFailed, setImageLoadFailed] = useState(false);
+    const imageUri = typeof item?.image === 'string' ? item.image.trim() : '';
+    const shouldShowImage = !!imageUri && !imageLoadFailed;
+
+    useEffect(() => {
+        setImageLoadFailed(false);
+    }, [imageUri]);
 
     const handlePressIn = () => {
         Animated.spring(scaleAnim, {
@@ -79,11 +86,18 @@ const FeaturedCard = ({ item, index, accent, onPress }) => {
                 activeOpacity={1}
             >
                 <Animated.View style={[styles.featuredCard, { transform: [{ scale: scaleAnim }] }]}>
-                    <Image
-                        source={{ uri: item.image }}
-                        style={styles.featuredImage}
-                        resizeMode="cover"
-                    />
+                    <View style={styles.imageFallbackOverlay}>
+                        <MaterialCommunityIcons name="image-off-outline" size={24} color="#6D6D84" />
+                        <Text style={styles.imageFallbackText}>Image unavailable</Text>
+                    </View>
+                    {shouldShowImage ? (
+                        <Image
+                            source={{ uri: imageUri }}
+                            style={styles.featuredImage}
+                            resizeMode="cover"
+                            onError={() => setImageLoadFailed(true)}
+                        />
+                    ) : null}
 
                     {/* Gradient overlays */}
                     <LinearGradient
@@ -139,6 +153,13 @@ const FeaturedCard = ({ item, index, accent, onPress }) => {
 // Regular (compact) card
 const CompactCard = ({ item, index, accent, onPress }) => {
     const scaleAnim = useRef(new Animated.Value(1)).current;
+    const [imageLoadFailed, setImageLoadFailed] = useState(false);
+    const imageUri = typeof item?.image === 'string' ? item.image.trim() : '';
+    const shouldShowImage = !!imageUri && !imageLoadFailed;
+
+    useEffect(() => {
+        setImageLoadFailed(false);
+    }, [imageUri]);
 
     const handlePressIn = () =>
         Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 300 }).start();
@@ -154,11 +175,17 @@ const CompactCard = ({ item, index, accent, onPress }) => {
                 activeOpacity={1}
             >
                 <Animated.View style={[styles.compactCard, { transform: [{ scale: scaleAnim }] }]}>
-                    <Image
-                        source={{ uri: item.image }}
-                        style={styles.compactImage}
-                        resizeMode="cover"
-                    />
+                    <View style={styles.imageFallbackOverlay}>
+                        <MaterialCommunityIcons name="image-off-outline" size={18} color="#6D6D84" />
+                    </View>
+                    {shouldShowImage ? (
+                        <Image
+                            source={{ uri: imageUri }}
+                            style={styles.compactImage}
+                            resizeMode="cover"
+                            onError={() => setImageLoadFailed(true)}
+                        />
+                    ) : null}
                     <LinearGradient
                         colors={['transparent', 'rgba(0,0,0,0.7)']}
                         style={styles.compactGradient}
@@ -249,6 +276,18 @@ const styles = StyleSheet.create({
         ...StyleSheet.absoluteFillObject,
         width: '100%',
         height: '100%',
+    },
+    imageFallbackOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#1C1C26',
+        gap: 6,
+    },
+    imageFallbackText: {
+        color: '#7A7A93',
+        fontSize: 11,
+        fontWeight: '600',
     },
     featuredGradient: {
         ...StyleSheet.absoluteFillObject,

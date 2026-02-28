@@ -1,5 +1,6 @@
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import {
+    Alert,
     Image,
     ScrollView,
     TouchableOpacity,
@@ -11,14 +12,25 @@ import {
     StatusBar,
 } from 'react-native';
 import { Feather, MaterialCommunityIcons, AntDesign } from '@expo/vector-icons';
-import { useContext, useRef, useEffect } from 'react';
+import { useContext, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useUser } from '@clerk/clerk-expo';
 import { FitnessItems } from '../Context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import axios from 'axios';
+import API_BASE_URL from '../constants/api';
 
 const { width, height } = Dimensions.get('window');
 
 const ACCENTS = ['#FF4D2E', '#00E5BE', '#6C63FF', '#FFB800', '#FF4D8C', '#00C2FF'];
+
+const getExerciseName = (value) =>
+    typeof value === 'string' ? value.trim() : String(value?.name || '').trim();
+
+const toTimestamp = (value) => {
+    const timestamp = new Date(value || 0).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+};
 
 const ExerciseRow = ({ item, index, isCompleted }) => {
     const slideAnim = useRef(new Animated.Value(30)).current;
@@ -105,7 +117,14 @@ const ExerciseRow = ({ item, index, isCompleted }) => {
 const WorkoutScreen = () => {
     const route = useRoute();
     const navigation = useNavigation();
-    const { completed, setCompleted } = useContext(FitnessItems);
+    const { user, isLoaded: isUserLoaded } = useUser();
+    const {
+        completed,
+        setCompleted,
+        inProgressWorkout,
+        saveInProgressWorkout,
+        clearInProgressWorkout,
+    } = useContext(FitnessItems);
     const { exercises, image } = route.params;
 
     const heroScale = useRef(new Animated.Value(1.06)).current;
@@ -124,8 +143,172 @@ const WorkoutScreen = () => {
     const handlePressOut = () =>
         Animated.spring(btnScale, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
 
-    const completedCount = exercises.filter((ex) => completed.includes(ex?.name)).length;
+    const completedNameSet = useMemo(
+        () => new Set((completed || []).map(getExerciseName).filter(Boolean)),
+        [completed]
+    );
+
+    const fitParams = useMemo(
+        () => ({
+            exercises: route.params.exercises,
+            dayIndex: route.params.dayIndex,
+            dayName: route.params.dayName,
+            totalDays: route.params.totalDays,
+            programKey: route.params.programKey,
+        }),
+        [
+            route.params.exercises,
+            route.params.dayIndex,
+            route.params.dayName,
+            route.params.totalDays,
+            route.params.programKey,
+        ]
+    );
+
+    const syncInProgressFromBackend = useCallback(async () => {
+        if (!isUserLoaded || !user?.id) return;
+
+        try {
+            const response = await axios.get(`${API_BASE_URL}/users/in-progress`, {
+                params: { clerkUserId: user.id },
+            });
+
+            const remoteWorkout = response.data?.workoutData || null;
+            if (!remoteWorkout) return;
+
+            const normalizedRemote = {
+                ...remoteWorkout,
+                clerkUserId: remoteWorkout.clerkUserId || user.id,
+                savedAt: remoteWorkout.savedAt || response.data?.updatedAt || new Date().toISOString(),
+            };
+
+            const localSavedAt = toTimestamp(inProgressWorkout?.savedAt);
+            const remoteSavedAt = toTimestamp(normalizedRemote.savedAt);
+            const localOwner = String(inProgressWorkout?.clerkUserId || '').trim();
+            const currentOwner = String(user.id || '').trim();
+            const isLocalForCurrentUser = !localOwner || localOwner === currentOwner;
+
+            if (!inProgressWorkout || !isLocalForCurrentUser || remoteSavedAt >= localSavedAt) {
+                saveInProgressWorkout(normalizedRemote);
+            }
+        } catch (error) {
+            console.error('Failed to sync in-progress workout from backend:', error);
+        }
+    }, [inProgressWorkout, isUserLoaded, saveInProgressWorkout, user?.id]);
+
+    const clearInProgressFromBackend = useCallback(async () => {
+        if (!user?.id) return;
+        try {
+            await axios.delete(`${API_BASE_URL}/users/in-progress`, {
+                data: { clerkUserId: user.id },
+            });
+        } catch (error) {
+            console.error('Failed to clear in-progress workout in backend:', error);
+        }
+    }, [user?.id]);
+
+    useFocusEffect(
+        useCallback(() => {
+            syncInProgressFromBackend();
+        }, [syncInProgressFromBackend])
+    );
+
+    const hasMatchingSavedSession = useMemo(() => {
+        if (!inProgressWorkout) return false;
+
+        const savedOwner = String(inProgressWorkout.clerkUserId || '').trim();
+        const currentOwner = String(user?.id || '').trim();
+        if (savedOwner && savedOwner !== currentOwner) {
+            return false;
+        }
+
+        const routeDayIndex = Number.isInteger(route.params?.dayIndex) ? route.params.dayIndex : null;
+        const savedDayIndex = Number.isInteger(inProgressWorkout.dayIndex) ? inProgressWorkout.dayIndex : null;
+        if (routeDayIndex == null || savedDayIndex == null || routeDayIndex !== savedDayIndex) {
+            return false;
+        }
+
+        const routeProgramKey = String(route.params?.programKey || '').trim();
+        const savedProgramKey = String(inProgressWorkout.programKey || '').trim();
+        if (routeProgramKey && savedProgramKey && routeProgramKey !== savedProgramKey) {
+            return false;
+        }
+
+        const routeNames = (exercises || []).map(getExerciseName).filter(Boolean);
+        const savedNames = (inProgressWorkout.exercises || []).map(getExerciseName).filter(Boolean);
+        if (!routeNames.length || routeNames.length !== savedNames.length) return false;
+        return routeNames.every((name, index) => name === savedNames[index]);
+    }, [exercises, inProgressWorkout, route.params?.dayIndex, route.params?.programKey, user?.id]);
+
+    const savedCompletedNameSet = useMemo(
+        () =>
+            new Set(
+                (inProgressWorkout?.completedExercises || [])
+                    .map(getExerciseName)
+                    .filter(Boolean)
+            ),
+        [inProgressWorkout?.completedExercises]
+    );
+
+    const activeCompletedNameSet =
+        hasMatchingSavedSession && savedCompletedNameSet.size
+            ? savedCompletedNameSet
+            : completedNameSet;
+    const completedCount = exercises.filter((ex) => activeCompletedNameSet.has(getExerciseName(ex))).length;
     const progress = exercises.length ? completedCount / exercises.length : 0;
+
+    const startFreshWorkout = async ({ clearRemote = false } = {}) => {
+        if (clearRemote) {
+            await clearInProgressFromBackend();
+        }
+        clearInProgressWorkout();
+        setCompleted([]);
+        navigation.navigate('Fit', fitParams);
+    };
+
+    const resumeSavedWorkout = () => {
+        if (!hasMatchingSavedSession || !inProgressWorkout) {
+            startFreshWorkout();
+            return;
+        }
+
+        const restoredCompleted = Array.isArray(inProgressWorkout.completedExercises)
+            ? inProgressWorkout.completedExercises
+            : [];
+
+        setCompleted(restoredCompleted);
+        navigation.navigate('Fit', {
+            ...fitParams,
+            resumeSession: inProgressWorkout,
+        });
+    };
+
+    const onStartPress = () => {
+        if (!hasMatchingSavedSession) {
+            startFreshWorkout();
+            return;
+        }
+
+        Alert.alert(
+            'Resume workout?',
+            'We found your saved progress for this day. Do you want to continue from where you stopped?',
+            [
+                {
+                    text: 'Resume',
+                    onPress: resumeSavedWorkout,
+                },
+                {
+                    text: 'Restart',
+                    style: 'destructive',
+                    onPress: () => startFreshWorkout({ clearRemote: true }),
+                },
+                {
+                    text: 'Cancel',
+                    style: 'cancel',
+                },
+            ]
+        );
+    };
 
     return (
         <View style={styles.container}>
@@ -182,7 +365,7 @@ const WorkoutScreen = () => {
                             key={index}
                             item={item}
                             index={index}
-                            isCompleted={completed.includes(item?.name)}
+                            isCompleted={activeCompletedNameSet.has(getExerciseName(item))}
                         />
                     ))}
                 </View>
@@ -191,10 +374,7 @@ const WorkoutScreen = () => {
             {/* Sticky START button */}
             <View style={styles.stickyBottom}>
                 <TouchableOpacity
-                    onPress={() => {
-                        setCompleted([]);
-                        navigation.navigate('Fit', { exercises: route.params.exercises });
-                    }}
+                    onPress={onStartPress}
                     onPressIn={handlePressIn}
                     onPressOut={handlePressOut}
                     activeOpacity={1}
@@ -204,13 +384,15 @@ const WorkoutScreen = () => {
                             colors={['#FF4D2E', '#FF2800']}
                             start={{ x: 0, y: 0 }}
                             end={{ x: 1, y: 0 }}
-                            style={styles.startBtnGradient}
-                        >
-                            <MaterialCommunityIcons name="whistle" size={22} color="#fff" />
-                            <Text style={styles.startBtnText}>START WORKOUT</Text>
-                            <Feather name="arrow-right" size={18} color="#fff" />
-                        </LinearGradient>
-                    </Animated.View>
+                                style={styles.startBtnGradient}
+                            >
+                                <MaterialCommunityIcons name="whistle" size={22} color="#fff" />
+                                <Text style={styles.startBtnText}>
+                                    {hasMatchingSavedSession ? 'RESUME WORKOUT' : 'START WORKOUT'}
+                                </Text>
+                                <Feather name="arrow-right" size={18} color="#fff" />
+                            </LinearGradient>
+                        </Animated.View>
                 </TouchableOpacity>
             </View>
         </View>

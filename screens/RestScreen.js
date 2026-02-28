@@ -1,21 +1,17 @@
-import { useNavigation } from '@react-navigation/native';
-import { useEffect, useState, useRef } from 'react';
-import { Text, TouchableOpacity, View, StyleSheet, Animated, StatusBar, Dimensions } from 'react-native';
+import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
+import { useContext, useEffect, useMemo, useRef } from 'react';
+import { Text, TouchableOpacity, View, StyleSheet, Animated, StatusBar } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { FitnessItems } from '../Context';
 
-const { width } = Dimensions.get('window');
-const REST_DURATION = 15;
+const FALLBACK_REST_DURATION = 15;
 
 // Animated circular progress ring (SVG-free, pure RN)
 const CountdownRing = ({ timeLeft, total }) => {
-    const progress = timeLeft / total;
-    const size = 220;
-    const strokeWidth = 8;
-    const radius = (size - strokeWidth * 2) / 2;
-    const circumference = 2 * Math.PI * radius;
-
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const progress = Math.max(0, Math.min(1, timeLeft / safeTotal));
     const pulseAnim = useRef(new Animated.Value(1)).current;
 
     useEffect(() => {
@@ -25,24 +21,22 @@ const CountdownRing = ({ timeLeft, total }) => {
                 Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
             ])
         );
-        if (timeLeft <= 5) {
+
+        if (timeLeft <= 5 && timeLeft > 0) {
             pulse.start();
         } else {
             pulse.stop();
             pulseAnim.setValue(1);
         }
-        return () => pulse.stop();
-    }, [timeLeft <= 5]);
 
-    // Use a simple arc drawn as a rotated View trick
-    const arcProgress = 1 - progress;
+        return () => pulse.stop();
+    }, [pulseAnim, timeLeft]);
+
     const urgentColor = timeLeft <= 5 ? '#FF4D2E' : '#00E5BE';
 
     return (
         <Animated.View style={[styles.ringContainer, { transform: [{ scale: pulseAnim }] }]}>
-            {/* Track ring */}
             <View style={[styles.ringTrack, { borderColor: '#1E1E26' }]} />
-            {/* Progress ring — simplified as border trick */}
             <View
                 style={[
                     styles.ringProgress,
@@ -58,7 +52,6 @@ const CountdownRing = ({ timeLeft, total }) => {
                 ]}
             />
 
-            {/* Center content */}
             <View style={styles.ringCenter}>
                 <Text style={[styles.ringTime, { color: urgentColor }]}>{timeLeft}</Text>
                 <Text style={styles.ringSec}>SEC</Text>
@@ -69,52 +62,86 @@ const CountdownRing = ({ timeLeft, total }) => {
 
 const RestScreen = () => {
     const navigation = useNavigation();
-    const [timeLeft, setTimeLeft] = useState(REST_DURATION);
-    const timerRef = useRef(null);
+    const route = useRoute();
+    const isFocused = useIsFocused();
+    const {
+        restTimer,
+        startRestTimer,
+        addRestTime,
+        stopRestTimer,
+        isRestTimerUrgent,
+    } = useContext(FitnessItems);
 
     const contentOpacity = useRef(new Animated.Value(0)).current;
     const contentY = useRef(new Animated.Value(20)).current;
+    const hasInitializedRef = useRef(false);
+    const hadActiveTimerRef = useRef(false);
+
+    const requestedDuration = useMemo(() => {
+        const parsed = Number(route.params?.duration);
+        return Number.isFinite(parsed) && parsed > 0
+            ? Math.round(parsed)
+            : FALLBACK_REST_DURATION;
+    }, [route.params?.duration]);
 
     useEffect(() => {
         Animated.parallel([
             Animated.timing(contentOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
             Animated.spring(contentY, { toValue: 0, tension: 80, friction: 10, useNativeDriver: true }),
         ]).start();
-    }, []);
+    }, [contentOpacity, contentY]);
+
+    // If screen opens and no timer is active, initialize one using the route duration.
+    useEffect(() => {
+        if (hasInitializedRef.current) return;
+        hasInitializedRef.current = true;
+
+        if (!restTimer.isActive && restTimer.timeLeft <= 0) {
+            startRestTimer(requestedDuration, true);
+        }
+    }, [requestedDuration, restTimer.isActive, restTimer.timeLeft, startRestTimer]);
 
     useEffect(() => {
-        timerRef.current = setInterval(() => {
-            setTimeLeft((prev) => {
-                if (prev <= 1) {
-                    clearInterval(timerRef.current);
-                    navigation.goBack();
-                    return 0;
-                }
-                return prev - 1;
-            });
-        }, 1000);
-        return () => clearInterval(timerRef.current);
-    }, [navigation]);
+        if (restTimer.isActive && restTimer.timeLeft > 0) {
+            hadActiveTimerRef.current = true;
+        }
+    }, [restTimer.isActive, restTimer.timeLeft]);
 
-    const addTime = () => setTimeLeft((prev) => prev + 10);
+    // When timer ends while this screen is open, return to previous screen automatically.
+    useEffect(() => {
+        if (!isFocused || !hadActiveTimerRef.current) return;
+        if (restTimer.isActive || restTimer.timeLeft > 0) return;
+
+        if (navigation.canGoBack()) {
+            navigation.goBack();
+        } else {
+            navigation.navigate('App');
+        }
+    }, [isFocused, navigation, restTimer.isActive, restTimer.timeLeft]);
+
+    const timeLeft = restTimer.timeLeft > 0 ? restTimer.timeLeft : requestedDuration;
+    const totalDuration = restTimer.duration > 0 ? restTimer.duration : requestedDuration;
+    const isUrgent = isRestTimerUrgent || timeLeft <= 5;
+
+    const addTime = () => addRestTime(10);
     const skipRest = () => {
-        clearInterval(timerRef.current);
-        navigation.goBack();
+        stopRestTimer();
+        if (navigation.canGoBack()) {
+            navigation.goBack();
+        } else {
+            navigation.navigate('App');
+        }
     };
-
-    const isUrgent = timeLeft <= 5;
 
     return (
         <View style={styles.container}>
             <StatusBar barStyle="light-content" />
 
-            {/* Background gradient */}
             <LinearGradient
                 colors={['#0D0D0F', '#121218', '#0D0D0F']}
                 style={StyleSheet.absoluteFillObject}
             />
 
-            {/* Decorative glow */}
             <View
                 style={[
                     styles.glow,
@@ -129,7 +156,6 @@ const RestScreen = () => {
                         { opacity: contentOpacity, transform: [{ translateY: contentY }] },
                     ]}
                 >
-                    {/* Header */}
                     <View style={styles.header}>
                         <View style={[styles.restBadge, { borderColor: isUrgent ? '#FF4D2E40' : '#00E5BE40' }]}>
                             <MaterialCommunityIcons
@@ -147,10 +173,8 @@ const RestScreen = () => {
                         </Text>
                     </View>
 
-                    {/* Ring */}
-                    <CountdownRing timeLeft={timeLeft} total={REST_DURATION} />
+                    <CountdownRing timeLeft={timeLeft} total={totalDuration} />
 
-                    {/* Tip card */}
                     <View style={styles.tipCard}>
                         <Feather name="wind" size={15} color="#555" style={{ marginRight: 10 }} />
                         <Text style={styles.tipText}>
@@ -160,7 +184,6 @@ const RestScreen = () => {
                         </Text>
                     </View>
 
-                    {/* Buttons */}
                     <View style={styles.buttonRow}>
                         <TouchableOpacity onPress={addTime} style={styles.secondaryBtn} activeOpacity={0.8}>
                             <Feather name="plus" size={16} color="#888" />
@@ -213,7 +236,6 @@ const styles = StyleSheet.create({
         transform: [{ scaleY: 0.5 }],
     },
 
-    // Header
     header: {
         alignItems: 'center',
         gap: 8,
@@ -247,7 +269,6 @@ const styles = StyleSheet.create({
         textAlign: 'center',
     },
 
-    // Ring
     ringContainer: {
         width: 220,
         height: 220,
@@ -271,80 +292,78 @@ const styles = StyleSheet.create({
     },
     ringCenter: {
         alignItems: 'center',
+        justifyContent: 'center',
     },
     ringTime: {
         fontSize: 72,
         fontWeight: '900',
         letterSpacing: -3,
-        lineHeight: 76,
+        lineHeight: 72,
     },
     ringSec: {
-        color: '#444',
+        color: '#555',
         fontSize: 12,
         fontWeight: '800',
         letterSpacing: 2,
-        marginTop: -2,
+        marginTop: 2,
     },
 
-    // Tip
     tipCard: {
+        width: '100%',
+        backgroundColor: '#16161A',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.06)',
+        paddingHorizontal: 14,
+        paddingVertical: 12,
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: '#16161A',
-        borderRadius: 16,
-        paddingVertical: 14,
-        paddingHorizontal: 18,
-        borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.05)',
-        width: '100%',
     },
     tipText: {
-        flex: 1,
-        color: '#555',
-        fontSize: 13,
+        color: '#7A7A93',
+        fontSize: 12,
         fontWeight: '500',
-        lineHeight: 18,
+        flex: 1,
     },
 
-    // Buttons
     buttonRow: {
-        flexDirection: 'row',
         width: '100%',
-        gap: 12,
-        alignItems: 'center',
+        flexDirection: 'row',
+        gap: 10,
     },
     secondaryBtn: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingVertical: 16,
-        paddingHorizontal: 20,
-        backgroundColor: '#16161A',
-        borderRadius: 16,
+        flex: 1,
+        height: 52,
+        borderRadius: 14,
         borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.07)',
+        borderColor: 'rgba(255,255,255,0.08)',
+        backgroundColor: '#15151A',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'row',
+        gap: 6,
     },
     secondaryBtnText: {
-        color: '#666',
-        fontSize: 14,
+        color: '#888',
+        fontSize: 13,
         fontWeight: '700',
     },
     skipBtnWrapper: {
-        flex: 1,
-        borderRadius: 16,
+        flex: 1.4,
+        borderRadius: 14,
         overflow: 'hidden',
     },
     skipBtn: {
+        height: 52,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 8,
-        paddingVertical: 18,
+        gap: 7,
     },
     skipBtnText: {
         color: '#fff',
-        fontSize: 15,
+        fontSize: 14,
         fontWeight: '900',
-        letterSpacing: 0.5,
+        letterSpacing: 0.6,
     },
 });

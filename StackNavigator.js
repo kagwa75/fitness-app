@@ -1,12 +1,11 @@
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, Dimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
 import { ClerkLoaded, ClerkProvider } from '@clerk/clerk-expo';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { BlurView } from 'expo-blur';
-import { LinearGradient } from 'expo-linear-gradient';
 
 // Screens
 import WelcomeScreen from './screens/WelcomeScreen';
@@ -18,14 +17,15 @@ import Profile from './tabs/profile';
 import WorkoutScreen from './screens/WorkoutScreen';
 import FitScreen from './screens/FitScreen';
 import RestScreen from './screens/RestScreen';
+import CelebrationScreen from './screens/CelebrationScreen';
 import Days from './screens/Days';
 import UserProfile from './components/userProfile';
 import Feedback from './components/Feedback';
+import RestMiniTimer from './components/RestMiniTimer';
 import { TokenCache } from './auth/auth';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
-const { width } = Dimensions.get('window');
 
 const publishableKey = process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
@@ -231,10 +231,22 @@ function MainTabs() {
 
 // ── Root navigator ────────────────────────────────────────────
 export default function AppNavigation() {
+    const navigationRef = useNavigationContainerRef();
+    const [currentRouteName, setCurrentRouteName] = useState('');
+
+    const syncCurrentRoute = () => {
+        const activeRoute = navigationRef.getCurrentRoute()?.name || '';
+        setCurrentRouteName(activeRoute);
+    };
+
     return (
         <ClerkProvider tokenCache={TokenCache} publishableKey={publishableKey}>
             <ClerkLoaded>
-                <NavigationContainer>
+                <NavigationContainer
+                    ref={navigationRef}
+                    onReady={syncCurrentRoute}
+                    onStateChange={syncCurrentRoute}
+                >
                     <Stack.Navigator initialRouteName="Welcome">
                         <Stack.Screen
                             name="Welcome"
@@ -249,10 +261,19 @@ export default function AppNavigation() {
                         <Stack.Screen name="Workout" component={WorkoutScreen} options={{ headerShown: false }} />
                         <Stack.Screen name="Fit" component={FitScreen} options={{ headerShown: false }} />
                         <Stack.Screen name="Rest" component={RestScreen} options={{ headerShown: false }} />
+                        <Stack.Screen
+                            name="Celebration"
+                            component={CelebrationScreen}
+                            options={{ headerShown: false, gestureEnabled: false }}
+                        />
                         <Stack.Screen name="Days" component={Days} options={{ headerShown: false }} />
                         <Stack.Screen name="userProfile" component={UserProfile} options={{ headerShown: false }} />
                         <Stack.Screen name="feedback" component={Feedback} options={{ headerShown: false }} />
                     </Stack.Navigator>
+                    <RestMiniTimer
+                        currentRouteName={currentRouteName}
+                        navigationRef={navigationRef}
+                    />
                 </NavigationContainer>
             </ClerkLoaded>
         </ClerkProvider>

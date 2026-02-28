@@ -1,5 +1,6 @@
 import { useNavigation, useRoute } from '@react-navigation/native';
 import {
+    Alert,
     Image,
     ScrollView,
     Text,
@@ -12,9 +13,10 @@ import {
     StatusBar,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-
+import { FitnessItems } from '../Context';
+import { api } from '../config/api';
 const { width, height } = Dimensions.get('window');
 
 // Staggered animated row
@@ -49,7 +51,7 @@ const AnimatedRow = ({ children, delay = 0 }) => {
 };
 
 // Workout day card
-const WorkoutDayCard = ({ workoutDay, index, exercises, onPress }) => {
+const WorkoutDayCard = ({ workoutDay, index, exercises, onPress, isLocked, isCompleted }) => {
     const scaleAnim = useRef(new Animated.Value(1)).current;
 
     const handlePressIn = () =>
@@ -57,11 +59,9 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress }) => {
     const handlePressOut = () =>
         Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
 
-    // Map day index to accent colours
     const accents = ['#FF4D2E', '#00E5BE', '#6C63FF', '#FFB800', '#FF4D8C', '#00C2FF'];
     const accent = accents[index % accents.length];
 
-    // Infer focus area from exercise targets
     const targets = [...new Set(exercises.slice(0, 3).map((e) => e.target).filter(Boolean))];
     const focusLabel = targets.length ? targets.join(' · ').toUpperCase() : workoutDay.focus?.toUpperCase() || 'FULL BODY';
 
@@ -73,19 +73,22 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress }) => {
                 onPressOut={handlePressOut}
                 activeOpacity={1}
             >
-                <Animated.View style={[styles.dayCard, { transform: [{ scale: scaleAnim }] }]}>
-                    {/* Left accent bar */}
+                <Animated.View
+                    style={[
+                        styles.dayCard,
+                        { transform: [{ scale: scaleAnim }] },
+                        isLocked && styles.dayCardLocked,
+                    ]}
+                >
                     <View style={[styles.dayAccentBar, { backgroundColor: accent }]} />
 
                     <View style={styles.dayCardContent}>
-                        {/* Number badge */}
                         <View style={[styles.dayNumber, { backgroundColor: accent + '20', borderColor: accent + '40' }]}>
                             <Text style={[styles.dayNumberText, { color: accent }]}>
                                 {String(index + 1).padStart(2, '0')}
                             </Text>
                         </View>
 
-                        {/* Info */}
                         <View style={styles.dayInfo}>
                             <Text style={styles.dayName}>{workoutDay.name}</Text>
                             <Text style={styles.dayFocus}>{focusLabel}</Text>
@@ -103,14 +106,26 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress }) => {
                             </View>
                         </View>
 
-                        {/* CTA */}
-                        <View style={[styles.startCTA, { backgroundColor: accent }]}>
-                            <Text style={styles.startText}>GO</Text>
-                            <Feather name="arrow-right" size={12} color="#fff" />
+                        <View style={[styles.startCTA, { backgroundColor: isLocked ? '#3D3D52' : accent }]}>
+                            {isCompleted ? (
+                                <>
+                                    <Feather name="check-circle" size={12} color="#fff" />
+                                    <Text style={styles.startText}>DONE</Text>
+                                </>
+                            ) : isLocked ? (
+                                <>
+                                    <Feather name="lock" size={12} color="#D6D6E6" />
+                                    <Text style={styles.startText}>LOCKED</Text>
+                                </>
+                            ) : (
+                                <>
+                                    <Text style={styles.startText}>GO</Text>
+                                    <Feather name="arrow-right" size={12} color="#fff" />
+                                </>
+                            )}
                         </View>
                     </View>
 
-                    {/* Exercise preview thumbnails */}
                     {exercises.slice(0, 3).some((e) => e.gifUrl) && (
                         <View style={styles.thumbRow}>
                             {exercises.slice(0, 3).map((ex, i) =>
@@ -118,10 +133,7 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress }) => {
                                     <Image
                                         key={i}
                                         source={{ uri: ex.gifUrl }}
-                                        style={[
-                                            styles.exerciseThumb,
-                                            { borderColor: accent + '50' },
-                                        ]}
+                                        style={[styles.exerciseThumb, { borderColor: accent + '50' }]}
                                     />
                                 ) : null
                             )}
@@ -134,6 +146,13 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress }) => {
                             )}
                         </View>
                     )}
+
+                    {isCompleted ? (
+                        <View style={styles.completedPill}>
+                            <Feather name="check-circle" size={11} color="#00E5BE" />
+                            <Text style={styles.completedPillText}>Completed</Text>
+                        </View>
+                    ) : null}
                 </Animated.View>
             </TouchableOpacity>
         </AnimatedRow>
@@ -143,10 +162,17 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress }) => {
 const Days = () => {
     const navigation = useNavigation();
     const route = useRoute();
+    const { getCompletedDaysForProgram } = useContext(FitnessItems);
     const [apiExercises, setApiExercises] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const { list, Days, image } = route.params;
+
+    const programKey = useMemo(
+        () => String(list || 'program').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        [list]
+    );
+    const completedDayIndexes = getCompletedDaysForProgram(programKey);
 
     const heroScale = useRef(new Animated.Value(1.08)).current;
     const heroOpacity = useRef(new Animated.Value(0)).current;
@@ -158,26 +184,46 @@ const Days = () => {
         ]).start();
     }, []);
 
-    useEffect(() => {
+    /*useEffect(() => {
         const fetchExercises = async () => {
             try {
                 setLoading(true);
                 setError(null);
-                const totalNeeded = Days.reduce((t, d) => t + (d.exercises?.length || 0), 0);
-                const limit = Math.max(totalNeeded, 10);
 
-                const response = await fetch(
-                    `https://exercisedb.p.rapidapi.com/exercises/bodyPart/${list.toLowerCase()}?limit=${limit}`,
-                    {
-                        headers: {
-                            'x-rapidapi-key': '4b35b2e3camshc1fb6629a92c312p1f22b2jsnf8899d2596dd',
-                            'x-rapidapi-host': 'exercisedb.p.rapidapi.com',
-                        },
-                    }
-                );
-                if (!response.ok) throw new Error('Failed to fetch exercises');
-                const data = await response.json();
-                setApiExercises(data);
+                const totalNeeded = Days.reduce((t, d) => t + (d.exercises?.length || 0), 0);
+                const targetBodyPart = list?.toLowerCase();
+
+                // The /exercises/bodyPart/ endpoint requires a higher API plan.
+                // Instead, we fetch exercises in batches and filter by bodyPart client-side.
+                let filtered = [];
+                let offset = 0;
+                const batchSize = 100;
+                const maxFetch = 500; // cap total API calls
+
+                while (filtered.length < totalNeeded && offset < maxFetch) {
+                    const response = await fetch(
+                        `https://exercisedb.p.rapidapi.com/exercises?limit=${batchSize}&offset=${offset}`,
+                        {
+                            headers: {
+                                'x-rapidapi-key': '4b35b2e3camshc1fb6629a92c312p1f22b2jsnf8899d2596dd',
+                                'x-rapidapi-host': 'exercisedb.p.rapidapi.com',
+                            },
+                        }
+                    );
+
+                    if (!response.ok) throw new Error('Failed to fetch exercises');
+                    const batch = await response.json();
+
+                    if (!Array.isArray(batch) || batch.length === 0) break;
+
+                    const matched = batch.filter(
+                        (ex) => ex.bodyPart?.toLowerCase() === targetBodyPart
+                    );
+                    filtered = [...filtered, ...matched];
+                    offset += batchSize;
+                }
+
+                setApiExercises(filtered);
             } catch (err) {
                 console.error('API Error:', err);
                 setError(err.message);
@@ -185,13 +231,49 @@ const Days = () => {
                 setLoading(false);
             }
         };
-        fetchExercises();
-    }, [list, Days]);
 
-    const getExercisesForDay = (workoutDay) => {
-        if (apiExercises.length === 0 || error) return workoutDay.exercises || [];
-        return apiExercises.slice(0, workoutDay.exercises?.length || 0);
+        fetchExercises();
+    }, [list, Days]);*/
+useEffect(() => {
+    const fetchExercises = async () => {
+        try {
+            setLoading(true);
+            setError(null);
+
+            const totalNeeded = Days.reduce((t, d) => t + (d.exercises?.length || 0), 0);
+            const limit = Math.max(totalNeeded * 2, 20); // fetch a bit more for variety
+
+            const data = await api.getByBodyPart(list, limit);
+            console.log('API data:',data)
+            setApiExercises(data);
+        } catch (err) {
+            console.error('API Error:', err);
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
     };
+
+    fetchExercises();
+}, [list, Days]);
+    const getExercisesForDay = (workoutDay) => {
+    if (apiExercises.length === 0 || error) return workoutDay.exercises || [];
+
+    return apiExercises
+        .slice(0, workoutDay.exercises?.length || 5)
+        .map(ex => ({
+            id: ex.id,
+            name: ex.name,
+            gifUrl: ex.gif_url,         // our API uses gif_url not gifUrl
+            target: ex.primaryMuscles?.[0] || '',
+            bodyPart: ex.bodyParts?.[0] || '',
+            equipment: ex.equipment?.[0] || '',
+            secondaryMuscles: ex.secondaryMuscles || [],
+            instructions: ex.instructions || [],
+            difficulty: ex.difficulty,
+            category: ex.category,
+        }));
+};
 
     if (loading) {
         return (
@@ -223,15 +305,10 @@ const Days = () => {
                     style={styles.heroBottomFade}
                 />
 
-                {/* Back button */}
-                <TouchableOpacity
-                    onPress={() => navigation.goBack()}
-                    style={styles.backBtn}
-                >
+                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
                     <Feather name="chevron-left" size={22} color="#fff" />
                 </TouchableOpacity>
 
-                {/* Hero text */}
                 <AnimatedRow delay={50}>
                     <View style={styles.heroTextContainer}>
                         <View style={styles.heroBadge}>
@@ -264,20 +341,38 @@ const Days = () => {
                     <Text style={styles.sectionLabel}>SELECT A DAY</Text>
                 </AnimatedRow>
 
-                {Days.map((workoutDay, index) => (
-                    <WorkoutDayCard
-                        key={index}
-                        workoutDay={workoutDay}
-                        index={index}
-                        exercises={getExercisesForDay(workoutDay)}
-                        onPress={() =>
-                            navigation.navigate('Workout', {
-                                exercises: getExercisesForDay(workoutDay),
-                                image,
-                            })
-                        }
-                    />
-                ))}
+                {Days.map((workoutDay, index) => {
+                    const isCompleted = completedDayIndexes.includes(index);
+                    const isLocked = index > 0 && !completedDayIndexes.includes(index - 1);
+
+                    return (
+                        <WorkoutDayCard
+                            key={index}
+                            workoutDay={workoutDay}
+                            index={index}
+                            exercises={getExercisesForDay(workoutDay)}
+                            isLocked={isLocked}
+                            isCompleted={isCompleted}
+                            onPress={() => {
+                                if (isLocked) {
+                                    Alert.alert(
+                                        'Day locked',
+                                        `Complete Day ${index} first to unlock Day ${index + 1}.`
+                                    );
+                                    return;
+                                }
+                                navigation.navigate('Workout', {
+                                    exercises: getExercisesForDay(workoutDay),
+                                    image,
+                                    dayIndex: index,
+                                    dayName: workoutDay?.name || `Day ${index + 1}`,
+                                    totalDays: Days.length,
+                                    programKey,
+                                });
+                            }}
+                        />
+                    );
+                })}
 
                 <View style={{ height: 40 }} />
             </ScrollView>
@@ -305,8 +400,6 @@ const styles = StyleSheet.create({
         fontWeight: '500',
         letterSpacing: 0.5,
     },
-
-    // Hero
     heroContainer: {
         height: height * 0.42,
         position: 'relative',
@@ -367,8 +460,6 @@ const styles = StyleSheet.create({
         fontWeight: '500',
         marginTop: 4,
     },
-
-    // Error banner
     errorBanner: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -387,8 +478,6 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: '500',
     },
-
-    // Scroll
     scroll: {
         flex: 1,
     },
@@ -403,8 +492,6 @@ const styles = StyleSheet.create({
         letterSpacing: 2,
         marginBottom: 14,
     },
-
-    // Day card
     dayCard: {
         backgroundColor: '#16161A',
         borderRadius: 20,
@@ -412,6 +499,10 @@ const styles = StyleSheet.create({
         overflow: 'hidden',
         borderWidth: 1,
         borderColor: 'rgba(255,255,255,0.06)',
+    },
+    dayCardLocked: {
+        borderColor: 'rgba(138,138,168,0.28)',
+        opacity: 0.8,
     },
     dayAccentBar: {
         height: 3,
@@ -482,8 +573,26 @@ const styles = StyleSheet.create({
         fontWeight: '900',
         letterSpacing: 0.5,
     },
-
-    // Thumbnail strip
+    completedPill: {
+        position: 'absolute',
+        top: 10,
+        right: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        backgroundColor: 'rgba(0,229,190,0.12)',
+        borderWidth: 1,
+        borderColor: 'rgba(0,229,190,0.32)',
+        borderRadius: 14,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+    },
+    completedPillText: {
+        color: '#00E5BE',
+        fontSize: 9,
+        fontWeight: '800',
+        letterSpacing: 0.6,
+    },
     thumbRow: {
         flexDirection: 'row',
         paddingHorizontal: 16,
