@@ -16,6 +16,7 @@ const VALID_LEVELS = new Set(["beginner", "intermediate", "advanced"]);
 const getUserProfileStorageKey = (clerkUserId) =>
   clerkUserId ? `${USER_PROFILE_STORAGE_KEY}_${clerkUserId}` : `${USER_PROFILE_STORAGE_KEY}_guest`;
 
+//check if it is web or native and if web, check if localStorage is available. If native, check if SecureStore is available. This is used to determine where to read/write data for user profile and in-progress workout.
 const canUseWebStorage = () =>
   Platform.OS === "web" &&
   typeof window !== "undefined" &&
