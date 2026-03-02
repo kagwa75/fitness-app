@@ -9,12 +9,25 @@ const FitnessItems = createContext();
 const DAY_PROGRESS_STORAGE_KEY = "program_day_progress_v1";
 const IN_PROGRESS_WORKOUT_STORAGE_KEY = "in_progress_workout_v1";
 const USER_PROFILE_STORAGE_KEY = "user_onboarding_profile_v1";
+const PROGRAM_ADAPTATION_STORAGE_KEY = "program_adaptation_v1";
 
 const VALID_GENDERS = new Set(["male", "female", "non_binary", "prefer_not_to_say"]);
 const VALID_GOALS = new Set(["lose_weight", "gain_weight", "build_muscle", "maintain_fitness"]);
 const VALID_LEVELS = new Set(["beginner", "intermediate", "advanced"]);
+const VALID_READINESS = new Set(["fresh", "normal", "fatigued"]);
+const VALID_SESSION_DIFFICULTY = new Set(["too_easy", "just_right", "too_hard"]);
+const VALID_LIMITATIONS = new Set([
+  "none",
+  "knee_pain",
+  "lower_back_pain",
+  "shoulder_pain",
+  "wrist_pain",
+  "ankle_pain",
+]);
 const getUserProfileStorageKey = (clerkUserId) =>
   clerkUserId ? `${USER_PROFILE_STORAGE_KEY}_${clerkUserId}` : `${USER_PROFILE_STORAGE_KEY}_guest`;
+const getProgramAdaptationStorageKey = (clerkUserId) =>
+  clerkUserId ? `${PROGRAM_ADAPTATION_STORAGE_KEY}_${clerkUserId}` : `${PROGRAM_ADAPTATION_STORAGE_KEY}_guest`;
 
 //check if it is web or native and if web, check if localStorage is available. If native, check if SecureStore is available. This is used to determine where to read/write data for user profile and in-progress workout.
 const canUseWebStorage = () =>
@@ -61,6 +74,91 @@ const safeParseObject = (raw) => {
   } catch {
     return {};
   }
+};
+
+const normalizeProgramKey = (value) =>
+  String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const sanitizeSessionFeedback = (entry) => {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const rpe = Number(entry.rpe);
+  const completionRate = Number(entry.completionRate);
+  const difficultyValue = String(entry.difficulty || "").trim().toLowerCase();
+  const safeDifficulty = VALID_SESSION_DIFFICULTY.has(difficultyValue) ? difficultyValue : "just_right";
+  const painPoints = Array.isArray(entry.painPoints)
+    ? [...new Set(
+        entry.painPoints
+          .map((item) => String(item || "").trim())
+          .filter((item) => VALID_LIMITATIONS.has(item) && item !== "none")
+      )]
+    : [];
+
+  return {
+    at: entry.at || new Date().toISOString(),
+    rpe: Number.isFinite(rpe) ? clampNumber(Math.round(rpe * 10) / 10, 1, 10) : 7,
+    completionRate: Number.isFinite(completionRate) ? clampNumber(completionRate, 0, 1) : 1,
+    difficulty: safeDifficulty,
+    painPoints,
+  };
+};
+
+const sanitizeProgramAdaptationMap = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  const next = {};
+  Object.entries(value).forEach(([programKey, adaptation]) => {
+    const safeProgramKey = normalizeProgramKey(programKey);
+    if (!safeProgramKey || !adaptation || typeof adaptation !== "object" || Array.isArray(adaptation)) return;
+
+    const readinessValue = String(adaptation.readiness || "").trim().toLowerCase();
+    const readiness = VALID_READINESS.has(readinessValue) ? readinessValue : "normal";
+    const reportedFatigue = readiness === "fatigued" || adaptation.reportedFatigue === true;
+    const sessionsCompleted = Number.isInteger(adaptation.sessionsCompleted)
+      ? Math.max(0, adaptation.sessionsCompleted)
+      : 0;
+    const avgRpe = Number(adaptation.avgRpe);
+    const avgDifficultyScore = Number(adaptation.avgDifficultyScore);
+    const avgCompletionRate = Number(adaptation.avgCompletionRate);
+    const painPoints = Array.isArray(adaptation.painPoints)
+      ? [...new Set(
+          adaptation.painPoints
+            .map((item) => String(item || "").trim())
+            .filter((item) => VALID_LIMITATIONS.has(item) && item !== "none")
+        )]
+      : [];
+    const contraindications = Array.isArray(adaptation.contraindications)
+      ? [...new Set(
+          adaptation.contraindications
+            .map((item) => String(item || "").trim())
+            .filter((item) => VALID_LIMITATIONS.has(item) && item !== "none")
+        )]
+      : painPoints;
+    const feedbackHistory = Array.isArray(adaptation.feedbackHistory)
+      ? adaptation.feedbackHistory
+          .map(sanitizeSessionFeedback)
+          .filter(Boolean)
+          .slice(-24)
+      : [];
+    const lastSession = sanitizeSessionFeedback(adaptation.lastSession) || feedbackHistory[feedbackHistory.length - 1] || null;
+
+    next[safeProgramKey] = {
+      readiness,
+      reportedFatigue,
+      sessionsCompleted,
+      avgRpe: Number.isFinite(avgRpe) ? clampNumber(avgRpe, 1, 10) : null,
+      avgDifficultyScore: Number.isFinite(avgDifficultyScore) ? clampNumber(avgDifficultyScore, 1, 3) : null,
+      avgCompletionRate: Number.isFinite(avgCompletionRate) ? clampNumber(avgCompletionRate, 0, 1) : null,
+      painPoints,
+      contraindications,
+      lastSession,
+      feedbackHistory,
+      updatedAt: adaptation.updatedAt || new Date().toISOString(),
+    };
+  });
+
+  return next;
 };
 
 const sanitizeInProgressWorkout = (value) => {
@@ -111,6 +209,7 @@ const sanitizeUserProfile = (value) => {
   const workoutLocation = String(value.workoutLocation || "").trim();
   const equipment = Array.isArray(value.equipment) ? value.equipment : [];
 const focusAreas = Array.isArray(value.focusAreas) ? value.focusAreas : [];
+const limitations = Array.isArray(value.limitations) ? value.limitations : [];
 const name      = String(value.name || '').trim();
 const bodyFat   = value.bodyFat !== null && value.bodyFat !== undefined
     ? Number(value.bodyFat)
@@ -122,6 +221,13 @@ const heightIn  = value.heightIn !== undefined ? Number(value.heightIn) : undefi
   if (!VALID_GENDERS.has(gender)) return null;
   if (!VALID_GOALS.has(goal)) return null;
   if (!VALID_LEVELS.has(fitnessLevel)) return null;
+
+  const normalizedLimitations = limitations
+    .filter((entry) => typeof entry === "string" && VALID_LIMITATIONS.has(entry.trim()))
+    .map((entry) => entry.trim());
+  const safeLimitations = normalizedLimitations.includes("none")
+    ? ["none"]
+    : [...new Set(normalizedLimitations)];
 
   return {
     age,
@@ -137,6 +243,7 @@ const heightIn  = value.heightIn !== undefined ? Number(value.heightIn) : undefi
     workoutLocation: workoutLocation || "home",
     equipment: equipment.filter(e => typeof e === "string" && e.trim()),
     focusAreas: focusAreas.filter(f => typeof f === "string" && f.trim()),
+    limitations: safeLimitations,
     name: name || null,
     bodyFat: Number.isFinite(bodyFat) && bodyFat > 0 && bodyFat < 100 ? bodyFat : null,
     heightFt: Number.isFinite(heightFt) && heightFt >= 0 ? heightFt : null,
@@ -175,6 +282,8 @@ const FitnessContext = ({ children, clerkUserId }) => {
   const [inProgressWorkout,  setInProgressWorkout]  = useState(null);
   const [userProfile,        setUserProfile]        = useState(null);
   const [isUserProfileHydrated, setIsUserProfileHydrated] = useState(false);
+  const [programAdaptation, setProgramAdaptation] = useState({});
+  const [isProgramAdaptationHydrated, setIsProgramAdaptationHydrated] = useState(false);
   const [restTimer,          setRestTimer]          = useState({
     isActive: false, endAt: null, timeLeft: 0, duration: 0,
   });
@@ -258,6 +367,30 @@ const FitnessContext = ({ children, clerkUserId }) => {
     load();
   }, [clerkUserId]);
 
+  useEffect(() => {
+    let isActive = true;
+
+    const load = async () => {
+      setIsProgramAdaptationHydrated(false);
+      setProgramAdaptation({});
+      const storageKey = getProgramAdaptationStorageKey(clerkUserId);
+      try {
+        const raw = await readValueByKey(storageKey);
+        const parsed = sanitizeProgramAdaptationMap(safeParseObject(raw));
+        if (isActive) setProgramAdaptation(parsed);
+      } catch {
+        if (isActive) setProgramAdaptation({});
+      } finally {
+        if (isActive) setIsProgramAdaptationHydrated(true);
+      }
+    };
+
+    load();
+    return () => {
+      isActive = false;
+    };
+  }, [clerkUserId]);
+
   // ── Persist helpers ─────────────────────────────────────────────────────────
   const persistDayProgress = useCallback((nextMap) => {
     writeValueByKey(DAY_PROGRESS_STORAGE_KEY, JSON.stringify(nextMap));
@@ -267,6 +400,12 @@ const FitnessContext = ({ children, clerkUserId }) => {
     if (!payload) { removeValueByKey(IN_PROGRESS_WORKOUT_STORAGE_KEY); return; }
     writeValueByKey(IN_PROGRESS_WORKOUT_STORAGE_KEY, JSON.stringify(payload));
   }, []);
+
+  useEffect(() => {
+    if (!isProgramAdaptationHydrated) return;
+    const storageKey = getProgramAdaptationStorageKey(clerkUserId);
+    writeValueByKey(storageKey, JSON.stringify(programAdaptation));
+  }, [clerkUserId, isProgramAdaptationHydrated, programAdaptation]);
 
   // ── Day progress ────────────────────────────────────────────────────────────
   const markDayCompleted = useCallback((programKey, dayIndex) => {
@@ -301,6 +440,44 @@ const FitnessContext = ({ children, clerkUserId }) => {
     persistInProgressWorkout(null);
   }, [persistInProgressWorkout]);
 
+  const saveProgramAdaptation = useCallback((programKey, payload = {}) => {
+    const safeProgramKey = normalizeProgramKey(programKey);
+    if (!safeProgramKey || !payload || typeof payload !== "object") return;
+
+    setProgramAdaptation((prev) => {
+      const nextEntry = sanitizeProgramAdaptationMap({
+        [safeProgramKey]: {
+          ...(prev[safeProgramKey] || {}),
+          ...payload,
+          updatedAt: new Date().toISOString(),
+        },
+      })[safeProgramKey];
+      if (!nextEntry) return prev;
+      return { ...prev, [safeProgramKey]: nextEntry };
+    });
+  }, []);
+
+  const getProgramAdaptation = useCallback((programKey) => {
+    const safeProgramKey = normalizeProgramKey(programKey);
+    if (!safeProgramKey) return null;
+    return programAdaptation[safeProgramKey] || null;
+  }, [programAdaptation]);
+
+  const clearProgramAdaptation = useCallback((programKey = null) => {
+    if (!programKey) {
+      setProgramAdaptation({});
+      return;
+    }
+    const safeProgramKey = normalizeProgramKey(programKey);
+    if (!safeProgramKey) return;
+    setProgramAdaptation((prev) => {
+      if (!prev[safeProgramKey]) return prev;
+      const next = { ...prev };
+      delete next[safeProgramKey];
+      return next;
+    });
+  }, []);
+
   // ── User profile ────────────────────────────────────────────────────────────
   const saveUserProfile = useCallback(async (payload) => {
     const sanitized = sanitizeUserProfile(payload);
@@ -328,8 +505,11 @@ const FitnessContext = ({ children, clerkUserId }) => {
 
   const clearUserProfile = useCallback(() => {
     const storageKey = getUserProfileStorageKey(clerkUserId);
+    const adaptationStorageKey = getProgramAdaptationStorageKey(clerkUserId);
     setUserProfile(null);
+    setProgramAdaptation({});
     removeValueByKey(storageKey);
+    removeValueByKey(adaptationStorageKey);
     // Note: we intentionally do NOT delete the cloud record so it can
     // be restored if the user signs back in on another device.
   }, [clerkUserId]);
@@ -398,6 +578,9 @@ const FitnessContext = ({ children, clerkUserId }) => {
         inProgressWorkout,
         saveInProgressWorkout,
         clearInProgressWorkout,
+        saveProgramAdaptation,
+        getProgramAdaptation,
+        clearProgramAdaptation,
         userProfile,
         saveUserProfile,
         clearUserProfile,

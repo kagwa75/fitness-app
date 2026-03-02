@@ -37,9 +37,10 @@ const { width } = Dimensions.get('window');
 //  9  Focus areas
 // 10  Workout location
 // 11  Equipment
-// 12  Analyzing + Plan preview
+// 12  Limitations / pain points
+// 13  Analyzing + Plan preview
 
-const TOTAL_STEPS = 13;
+const TOTAL_STEPS = 14;
 const ONBOARDING_DRAFT_STORAGE_KEY = 'user_onboarding_draft_v1';
 
 const getOnboardingDraftStorageKey = (clerkUserId) =>
@@ -214,6 +215,15 @@ const EQUIPMENT_BY_LOCATION = {
     ],
 };
 
+const LIMITATION_OPTIONS = [
+    { value: 'none',             label: 'No current limitations', icon: 'check-circle-outline', color: '#00E5BE' },
+    { value: 'knee_pain',        label: 'Knee discomfort',        icon: 'run',                  color: '#FFB800' },
+    { value: 'lower_back_pain',  label: 'Lower back discomfort',  icon: 'human-handsdown',      color: '#FF4D2E' },
+    { value: 'shoulder_pain',    label: 'Shoulder discomfort',    icon: 'human-handsup',        color: '#00C2FF' },
+    { value: 'wrist_pain',       label: 'Wrist discomfort',       icon: 'hand-back-right',      color: '#6C63FF' },
+    { value: 'ankle_pain',       label: 'Ankle discomfort',       icon: 'shoe-sneaker',         color: '#FF4D8C' },
+];
+
 // ─── Calculation helpers ──────────────────────────────────────────────────────
 
 const toKg  = (w, unit) => unit === 'lbs' ? w * 0.453592 : w;
@@ -253,7 +263,7 @@ const calcMacros = (tdee, goal, bf, kg) => {
     return { target, prot, fat, carb };
 };
 
-const buildPlan = ({ goal, fitnessLevel, activityLevel, gender, age, weightKg, heightCm, bodyFatPct, focusAreas }) => {
+const buildPlan = ({ goal, fitnessLevel, activityLevel, gender, age, weightKg, heightCm, bodyFatPct, focusAreas, limitations: limitationValues = [] }) => {
     const gMap  = { lose_weight: { label: 'Fat Loss', color: '#FF4D2E', icon: 'fire' }, gain_weight: { label: 'Mass Gain', color: '#FFB800', icon: 'scale-bathroom' }, build_muscle: { label: 'Muscle Building', color: '#00E5BE', icon: 'arm-flex' }, maintain_fitness: { label: 'Maintenance', color: '#6C63FF', icon: 'heart-pulse' } };
     const lMap  = { beginner: { sessions: '3x / week', intensity: 'Low–Medium' }, intermediate: { sessions: '4–5x / week', intensity: 'Medium–High' }, advanced: { sessions: '5–6x / week', intensity: 'High' } };
     const fMap  = { back: 'Back', shoulders: 'Shoulders', arms: 'Arms', chest: 'Chest', abs: 'Abs', glutes: 'Glutes', legs: 'Legs', full_body: 'Full Body' };
@@ -263,13 +273,22 @@ const buildPlan = ({ goal, fitnessLevel, activityLevel, gender, age, weightKg, h
     const macros = calcMacros(tdee, goal, parseFloat(bodyFatPct) || null, weightKg);
     const bmi    = calcBMI(weightKg, heightCm);
     const bmiCat = bmiCategory(bmi);
+    const lmMap = {
+        none: 'No major limitations',
+        knee_pain: 'Knee discomfort',
+        lower_back_pain: 'Lower back discomfort',
+        shoulder_pain: 'Shoulder discomfort',
+        wrist_pain: 'Wrist discomfort',
+        ankle_pain: 'Ankle discomfort',
+    };
     const focuses = (focusAreas || []).map(v => fMap[v] || v);
-    return { ...g, ...l, tdee, macros, bmi, bmiCat, focuses };
+    const limitations = (limitationValues || []).map(v => lmMap[v] || v);
+    return { ...g, ...l, tdee, macros, bmi, bmiCat, focuses, limitations };
 };
 
 // ─── Shared sub-components ────────────────────────────────────────────────────
 
-// Linear progress bar replaces dots at 13 steps
+// Linear progress bar replaces dots across all onboarding steps
 const LinearProgress = ({ current, total }) => {
     const anim = useRef(new Animated.Value(0)).current;
     useEffect(() => {
@@ -509,7 +528,7 @@ const MacroBar = ({ label, grams, calories, color, totalCals }) => {
 
 const PlanPreview = ({ data }) => {
     const plan = buildPlan(data);
-    const { macros, bmi, bmiCat, focuses, label, color, icon, sessions, intensity, tdee } = plan;
+    const { macros, bmi, bmiCat, focuses, limitations, label, color, icon, sessions, intensity, tdee } = plan;
     const op = useRef(new Animated.Value(0)).current;
     const ty = useRef(new Animated.Value(20)).current;
     useEffect(() => {
@@ -601,6 +620,19 @@ const PlanPreview = ({ data }) => {
                     </View>
                 </View>
             )}
+
+            {limitations.length > 0 && (
+                <View style={styles.focusCard}>
+                    <Text style={styles.focusEyebrow}>SAFETY ADAPTATIONS</Text>
+                    <View style={styles.focusTags}>
+                        {limitations.map(item => (
+                            <View key={item} style={[styles.focusTag, { borderColor: '#FFB80055', backgroundColor: '#FFB80012' }]}>
+                                <Text style={[styles.focusTagTxt, { color: '#FFB800' }]}>{item}</Text>
+                            </View>
+                        ))}
+                    </View>
+                </View>
+            )}
         </Animated.ScrollView>
     );
 };
@@ -668,6 +700,7 @@ export default function OnboardingScreen() {
     const [focusAreas,     setFocusAreas]     = useState([]);
     const [workoutLocation,setWorkoutLocation]= useState('');
     const [equipment,      setEquipment]      = useState([]);
+    const [limitations,    setLimitations]    = useState([]);
     const [isDraftHydrated,setIsDraftHydrated]= useState(false);
     const [showResumeToast,setShowResumeToast]= useState(false);
 
@@ -724,6 +757,7 @@ export default function OnboardingScreen() {
             setFocusAreas(Array.isArray(source.focusAreas) ? source.focusAreas : []);
             setWorkoutLocation(String(source.workoutLocation || ''));
             setEquipment(Array.isArray(source.equipment) ? source.equipment : []);
+            setLimitations(Array.isArray(source.limitations) ? source.limitations : []);
             setTouched({});
 
             const parsedStep = Number.isInteger(source.step) ? source.step : 0;
@@ -763,6 +797,7 @@ export default function OnboardingScreen() {
             focusAreas,
             workoutLocation,
             equipment,
+            limitations,
             updatedAt: new Date().toISOString(),
         };
         writeValueByKey(onboardingDraftStorageKey, JSON.stringify(payload));
@@ -786,6 +821,7 @@ export default function OnboardingScreen() {
         focusAreas,
         workoutLocation,
         equipment,
+        limitations,
         showFlash,
     ]);
 
@@ -854,7 +890,8 @@ export default function OnboardingScreen() {
         focusAreas.length > 0,                                                           //  9 focus areas
         !!workoutLocation,                                                               // 10 workout location
         equipment.length > 0,                                                            // 11 equipment
-        true,                                                                            // 12 plan preview
+        true,                                                                            // 12 limitations (optional)
+        true,                                                                            // 13 plan preview
     ], [name, parsedAge, gender, parsedWeight, heightValid, bfValid, goal, fitnessLevel, activityLevel, focusAreas, workoutLocation, equipment]);
 
     // ── Navigation ────────────────────────────────────────────────────────────
@@ -866,7 +903,7 @@ export default function OnboardingScreen() {
     };
     const handleNext = () => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        if (step === 11) {
+        if (step === 12) {
             // Trigger analyzing animation before showing plan
             setShowAnalyzing(true);
         } else if (step < TOTAL_STEPS - 1) {
@@ -905,6 +942,7 @@ export default function OnboardingScreen() {
             focusAreas,
             workoutLocation,
             equipment,
+            limitations,
             updatedAt:     new Date().toISOString(),
         });
         if (saved) {
@@ -922,6 +960,18 @@ export default function OnboardingScreen() {
     const toggleEquipment = val => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         setEquipment(p => p.includes(val) ? p.filter(v => v !== val) : [...p, val]);
+    };
+    const toggleLimitation = val => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        setLimitations(prev => {
+            if (val === 'none') {
+                return prev.includes('none') ? [] : ['none'];
+            }
+            const withoutNone = prev.filter(v => v !== 'none');
+            return withoutNone.includes(val)
+                ? withoutNone.filter(v => v !== val)
+                : [...withoutNone, val];
+        });
     };
 
     // ── Feedback bubble source ────────────────────────────────────────────────
@@ -951,8 +1001,8 @@ export default function OnboardingScreen() {
     const previewData = useMemo(() => {
         const cm = toCm(heightCm, heightFt, heightIn, heightUnit);
         const kg = toKg(parsedWeight || 70, weightUnit);
-        return { goal, fitnessLevel, activityLevel, gender, age, weightKg: kg, heightCm: cm, bodyFatPct: bodyFat || null, focusAreas };
-    }, [goal, fitnessLevel, activityLevel, gender, age, parsedWeight, weightUnit, heightCm, heightFt, heightIn, heightUnit, bodyFat, focusAreas]);
+        return { goal, fitnessLevel, activityLevel, gender, age, weightKg: kg, heightCm: cm, bodyFatPct: bodyFat || null, focusAreas, limitations };
+    }, [goal, fitnessLevel, activityLevel, gender, age, parsedWeight, weightUnit, heightCm, heightFt, heightIn, heightUnit, bodyFat, focusAreas, limitations]);
 
     // ── Step config ───────────────────────────────────────────────────────────
     const STEPS = useMemo(() => [
@@ -968,6 +1018,7 @@ export default function OnboardingScreen() {
         { emoji: '🎯', question: 'Which areas do you want to focus on?', sub: 'Pick all that apply — we\'ll prioritize these muscle groups.' },
         { emoji: '🏋️', question: 'Where do you train?',             sub: 'We\'ll build your program around your environment.' },
         { emoji: '🔧', question: 'What equipment do you have access to?', sub: 'We\'ll only program exercises you can actually do.' },
+        { emoji: '🛟', question: 'Any pain points or limitations?',   sub: 'Optional — we\'ll avoid risky movements and swap safer alternatives.', optional: true },
         { emoji: '✨', question: 'Your plan is ready.',              sub: `Built specifically for you, ${name || 'athlete'}.` },
     ], [name]);
 
@@ -1125,7 +1176,21 @@ export default function OnboardingScreen() {
                 </View>
             ) : null;
 
-            case 12: return <PlanPreview data={previewData} />;
+            case 12: return (
+                <View style={styles.chipGrid}>
+                    {LIMITATION_OPTIONS.map(opt => (
+                        <MultiChip
+                            key={opt.value}
+                            option={opt}
+                            selected={limitations.includes(opt.value)}
+                            onPress={() => toggleLimitation(opt.value)}
+                            color={opt.color}
+                        />
+                    ))}
+                </View>
+            );
+
+            case 13: return <PlanPreview data={previewData} />;
 
             default: return null;
         }
@@ -1229,7 +1294,7 @@ export default function OnboardingScreen() {
                             name={name.trim().split(' ')[0]}
                             onDone={() => {
                                 setShowAnalyzing(false);
-                                goTo(12, 'forward');
+                                goTo(13, 'forward');
                             }}
                         />
                     </SafeAreaView>

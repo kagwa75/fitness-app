@@ -16,8 +16,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { FitnessItems } from '../Context';
-import { api } from '../config/api';
+import { generateProgramDaysFromTemplate } from '../utils/Workoutgenerator';
 const { width, height } = Dimensions.get('window');
+
+const READINESS_OPTIONS = [
+    { value: 'fresh', label: 'Fresh', icon: 'trending-up', color: '#00E5BE' },
+    { value: 'normal', label: 'Normal', icon: 'activity', color: '#00C2FF' },
+    { value: 'fatigued', label: 'Fatigued', icon: 'battery-charging', color: '#FFB800' },
+];
 
 // Staggered animated row
 const AnimatedRow = ({ children, delay = 0 }) => {
@@ -162,16 +168,26 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress, isLocked, isCom
 const Days = () => {
     const navigation = useNavigation();
     const route = useRoute();
-    const { getCompletedDaysForProgram } = useContext(FitnessItems);
-    const [apiExercises, setApiExercises] = useState([]);
+    const {
+        getCompletedDaysForProgram,
+        userProfile,
+        getProgramAdaptation,
+        saveProgramAdaptation,
+    } = useContext(FitnessItems);
+    const [personalizedDays, setPersonalizedDays] = useState([]);
+    const [planMeta, setPlanMeta] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const { list, Days, image } = route.params;
+    const { list = '', category = '', Days: programDays = [], image } = route.params || {};
 
     const programKey = useMemo(
         () => String(list || 'program').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-'),
         [list]
     );
+    const adaptation = getProgramAdaptation(programKey);
+    const readiness = adaptation?.readiness || 'normal';
+    const reportedFatigue = readiness === 'fatigued' || adaptation?.reportedFatigue === true;
+    const adaptationVersion = adaptation?.updatedAt || '';
     const completedDayIndexes = getCompletedDaysForProgram(programKey);
 
     const heroScale = useRef(new Animated.Value(1.08)).current;
@@ -184,96 +200,58 @@ const Days = () => {
         ]).start();
     }, []);
 
-    /*useEffect(() => {
-        const fetchExercises = async () => {
+    useEffect(() => {
+        let isActive = true;
+
+        const buildDays = async () => {
             try {
                 setLoading(true);
                 setError(null);
 
-                const totalNeeded = Days.reduce((t, d) => t + (d.exercises?.length || 0), 0);
-                const targetBodyPart = list?.toLowerCase();
+                const generated = await generateProgramDaysFromTemplate({
+                    programDays,
+                    userProfile,
+                    categoryLabel: category,
+                    listLabel: list,
+                    adaptation: {
+                        ...(adaptation || {}),
+                        adherenceRate: programDays.length
+                            ? Math.min(1, completedDayIndexes.length / programDays.length)
+                            : 0,
+                        reportedFatigue,
+                    },
+                });
 
-                // The /exercises/bodyPart/ endpoint requires a higher API plan.
-                // Instead, we fetch exercises in batches and filter by bodyPart client-side.
-                let filtered = [];
-                let offset = 0;
-                const batchSize = 100;
-                const maxFetch = 500; // cap total API calls
-
-                while (filtered.length < totalNeeded && offset < maxFetch) {
-                    const response = await fetch(
-                        `https://exercisedb.p.rapidapi.com/exercises?limit=${batchSize}&offset=${offset}`,
-                        {
-                            headers: {
-                                'x-rapidapi-key': '4b35b2e3camshc1fb6629a92c312p1f22b2jsnf8899d2596dd',
-                                'x-rapidapi-host': 'exercisedb.p.rapidapi.com',
-                            },
-                        }
-                    );
-
-                    if (!response.ok) throw new Error('Failed to fetch exercises');
-                    const batch = await response.json();
-
-                    if (!Array.isArray(batch) || batch.length === 0) break;
-
-                    const matched = batch.filter(
-                        (ex) => ex.bodyPart?.toLowerCase() === targetBodyPart
-                    );
-                    filtered = [...filtered, ...matched];
-                    offset += batchSize;
+                if (!isActive) return;
+                const nextDays = Array.isArray(generated?.days) ? generated.days : [];
+                setPersonalizedDays(nextDays.length ? nextDays : programDays);
+                setPlanMeta(generated?.meta || null);
+                if (generated?.meta?.source !== 'api') {
+                    setError('Couldn\'t load live exercises — using local data');
                 }
-
-                setApiExercises(filtered);
             } catch (err) {
+                if (!isActive) return;
                 console.error('API Error:', err);
-                setError(err.message);
+                setError('Couldn\'t load live exercises — using local data');
+                setPersonalizedDays(programDays);
+                setPlanMeta(null);
             } finally {
-                setLoading(false);
+                if (isActive) setLoading(false);
             }
         };
 
-        fetchExercises();
-    }, [list, Days]);*/
-useEffect(() => {
-    const fetchExercises = async () => {
-        try {
-            setLoading(true);
-            setError(null);
+        buildDays();
+        return () => {
+            isActive = false;
+        };
+    }, [programDays, userProfile, category, list, completedDayIndexes.length, reportedFatigue, adaptationVersion]);
 
-            const totalNeeded = Days.reduce((t, d) => t + (d.exercises?.length || 0), 0);
-            const limit = Math.max(totalNeeded * 2, 20); // fetch a bit more for variety
-
-            const data = await api.getByBodyPart(list, limit);
-            console.log('API data:',data)
-            setApiExercises(data);
-        } catch (err) {
-            console.error('API Error:', err);
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
+    const handleReadinessChange = (value) => {
+        saveProgramAdaptation(programKey, {
+            readiness: value,
+            reportedFatigue: value === 'fatigued',
+        });
     };
-
-    fetchExercises();
-}, [list, Days]);
-    const getExercisesForDay = (workoutDay) => {
-    if (apiExercises.length === 0 || error) return workoutDay.exercises || [];
-
-    return apiExercises
-        .slice(0, workoutDay.exercises?.length || 5)
-        .map(ex => ({
-            id: ex.id,
-            name: ex.name,
-            gifUrl: ex.gif_url,         // our API uses gif_url not gifUrl
-            target: ex.primaryMuscles?.[0] || '',
-            bodyPart: ex.bodyParts?.[0] || '',
-            equipment: ex.equipment?.[0] || '',
-            secondaryMuscles: ex.secondaryMuscles || [],
-            instructions: ex.instructions || [],
-            difficulty: ex.difficulty,
-            category: ex.category,
-        }));
-};
 
     if (loading) {
         return (
@@ -316,7 +294,12 @@ useEffect(() => {
                             <Text style={styles.heroBadgeText}>PROGRAM</Text>
                         </View>
                         <Text style={styles.heroTitle}>{list}</Text>
-                        <Text style={styles.heroSubtitle}>{Days.length} workout days</Text>
+                        <Text style={styles.heroSubtitle}>{personalizedDays.length || programDays.length} workout days</Text>
+                        {planMeta?.progression ? (
+                            <Text style={styles.heroCycleText}>
+                                WEEK {planMeta.progression.week} · {String(planMeta.progression.phase || '').toUpperCase()}
+                            </Text>
+                        ) : null}
                     </View>
                 </AnimatedRow>
             </View>
@@ -326,7 +309,7 @@ useEffect(() => {
                 <View style={styles.errorBanner}>
                     <Feather name="alert-circle" size={14} color="#FFB800" />
                     <Text style={styles.errorBannerText}>
-                        Couldn't load live exercises — using local data
+                        {error}
                     </Text>
                 </View>
             )}
@@ -341,16 +324,64 @@ useEffect(() => {
                     <Text style={styles.sectionLabel}>SELECT A DAY</Text>
                 </AnimatedRow>
 
-                {Days.map((workoutDay, index) => {
+                <AnimatedRow delay={190}>
+                    <View style={styles.readinessCard}>
+                        <View style={styles.readinessHeader}>
+                            <Feather name="heart" size={12} color="#FF4D2E" />
+                            <Text style={styles.readinessTitle}>How are you feeling today?</Text>
+                        </View>
+                        <View style={styles.readinessOptions}>
+                            {READINESS_OPTIONS.map((option) => {
+                                const active = readiness === option.value;
+                                return (
+                                    <TouchableOpacity
+                                        key={option.value}
+                                        activeOpacity={0.85}
+                                        onPress={() => handleReadinessChange(option.value)}
+                                        style={[
+                                            styles.readinessPill,
+                                            active && {
+                                                borderColor: option.color,
+                                                backgroundColor: option.color + '1F',
+                                            },
+                                        ]}
+                                    >
+                                        <Feather
+                                            name={option.icon}
+                                            size={11}
+                                            color={active ? option.color : '#63637A'}
+                                        />
+                                        <Text
+                                            style={[
+                                                styles.readinessPillText,
+                                                active && { color: option.color },
+                                            ]}
+                                        >
+                                            {option.label}
+                                        </Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </View>
+                        {reportedFatigue ? (
+                            <Text style={styles.readinessHint}>
+                                Recovery mode active: lighter sets/reps are being applied.
+                            </Text>
+                        ) : null}
+                    </View>
+                </AnimatedRow>
+
+                {(personalizedDays.length ? personalizedDays : programDays).map((workoutDay, index) => {
                     const isCompleted = completedDayIndexes.includes(index);
                     const isLocked = index > 0 && !completedDayIndexes.includes(index - 1);
+                    const dayExercises = Array.isArray(workoutDay?.exercises) ? workoutDay.exercises : [];
 
                     return (
                         <WorkoutDayCard
                             key={index}
                             workoutDay={workoutDay}
                             index={index}
-                            exercises={getExercisesForDay(workoutDay)}
+                            exercises={dayExercises}
                             isLocked={isLocked}
                             isCompleted={isCompleted}
                             onPress={() => {
@@ -362,11 +393,11 @@ useEffect(() => {
                                     return;
                                 }
                                 navigation.navigate('Workout', {
-                                    exercises: getExercisesForDay(workoutDay),
+                                    exercises: dayExercises,
                                     image,
                                     dayIndex: index,
                                     dayName: workoutDay?.name || `Day ${index + 1}`,
-                                    totalDays: Days.length,
+                                    totalDays: personalizedDays.length || programDays.length,
                                     programKey,
                                 });
                             }}
@@ -460,6 +491,13 @@ const styles = StyleSheet.create({
         fontWeight: '500',
         marginTop: 4,
     },
+    heroCycleText: {
+        color: '#FF4D2E',
+        marginTop: 6,
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.1,
+    },
     errorBanner: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -490,7 +528,55 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: '800',
         letterSpacing: 2,
+        marginBottom: 12,
+    },
+    readinessCard: {
         marginBottom: 14,
+        backgroundColor: '#141419',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        paddingHorizontal: 12,
+        paddingVertical: 11,
+        gap: 10,
+    },
+    readinessHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    readinessTitle: {
+        color: '#B5B5C7',
+        fontSize: 11,
+        fontWeight: '700',
+        letterSpacing: 0.4,
+    },
+    readinessOptions: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    readinessPill: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        paddingVertical: 9,
+        backgroundColor: '#171723',
+    },
+    readinessPillText: {
+        color: '#80809A',
+        fontSize: 11,
+        fontWeight: '700',
+    },
+    readinessHint: {
+        color: '#FFB800',
+        fontSize: 10,
+        fontWeight: '600',
+        lineHeight: 14,
     },
     dayCard: {
         backgroundColor: '#16161A',

@@ -22,6 +22,7 @@ import Days from './screens/Days';
 import UserProfile from './components/userProfile';
 import Feedback from './components/Feedback';
 import RestMiniTimer from './components/RestMiniTimer';
+import PersonalizedPlanScreen from './screens/PersonalizedPlanScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -253,6 +254,7 @@ export default function AppNavigation() {
                     component={OnboardingScreen}
                     options={{ headerShown: false }}
                 />
+                <Stack.Screen name="PersonalizedPlan" component={PersonalizedPlanScreen} />
                 <Stack.Screen
                     name="App"
                     component={MainTabs}

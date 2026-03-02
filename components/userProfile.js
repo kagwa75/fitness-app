@@ -47,6 +47,15 @@ const GENDER_LABELS = {
     prefer_not_to_say: 'Prefer not to say',
 };
 
+const LIMITATION_LABELS = {
+    none:            { label: 'No major limitations', icon: 'check-circle-outline', color: '#00E5BE' },
+    knee_pain:       { label: 'Knee discomfort',      icon: 'run',                  color: '#FFB800' },
+    lower_back_pain: { label: 'Lower back discomfort',icon: 'human-handsdown',      color: '#FF4D2E' },
+    shoulder_pain:   { label: 'Shoulder discomfort',  icon: 'human-handsup',        color: '#00C2FF' },
+    wrist_pain:      { label: 'Wrist discomfort',     icon: 'hand-back-right',      color: '#6C63FF' },
+    ankle_pain:      { label: 'Ankle discomfort',     icon: 'shoe-sneaker',         color: '#FF4D8C' },
+};
+
 // ── BMI helpers ───────────────────────────────────────────────────────────────
 
 const calcBMI = (weight, weightUnit, height, heightUnit) => {
@@ -154,6 +163,9 @@ export default function UserProfile() {
     const goal    = GOAL_LABELS[userProfile?.goal]         || null;
     const level   = LEVEL_LABELS[userProfile?.fitnessLevel]   || null;
     const activity = ACTIVITY_LABELS[userProfile?.activityLevel] || null;
+    const limitations = Array.isArray(userProfile?.limitations)
+        ? userProfile.limitations.map((item) => LIMITATION_LABELS[item]).filter(Boolean)
+        : [];
 
     const syncedAt = userProfile?.updatedAt
         ? new Date(userProfile.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -337,6 +349,30 @@ export default function UserProfile() {
                                             </View>
                                         </>
                                     ) : null}
+                                </View>
+
+                                {/* ── Limitations card ── */}
+                                <SectionLabel icon="shield-check-outline" text="SAFETY LIMITS" />
+                                <View style={styles.card}>
+                                    <View style={styles.tagRow}>
+                                        <Text style={styles.dataLabel}>Current Limitations</Text>
+                                        <View style={styles.activityChipWrap}>
+                                            {limitations.length ? (
+                                                <View style={styles.limitationWrap}>
+                                                    {limitations.map((item) => (
+                                                        <TagChip
+                                                            key={item.label}
+                                                            icon={item.icon}
+                                                            label={item.label}
+                                                            color={item.color}
+                                                        />
+                                                    ))}
+                                                </View>
+                                            ) : (
+                                                <Text style={styles.activityDesc}>No limitations saved</Text>
+                                            )}
+                                        </View>
+                                    </View>
                                 </View>
                             </>
                         ) : (
@@ -629,6 +665,7 @@ const styles = StyleSheet.create({
         gap: 10,
     },
     activityChipWrap: { alignItems: 'flex-end', gap: 3 },
+    limitationWrap: { alignItems: 'flex-end', gap: 6 },
     activityDesc: {
         color: '#444',
         fontSize: 10,

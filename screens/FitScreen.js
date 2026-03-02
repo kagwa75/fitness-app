@@ -21,6 +21,12 @@ import API_BASE_URL from '../constants/api';
 
 const { width, height } = Dimensions.get('window');
 const REST_BETWEEN_EXERCISES_SECONDS = 15;
+const MAX_FEEDBACK_HISTORY = 24;
+const FEEDBACK_DIFFICULTY_SCORE = {
+    too_easy: 1,
+    just_right: 2,
+    too_hard: 3,
+};
 
 const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
@@ -36,6 +42,15 @@ const normalizeCompletedExercises = (list) =>
                   String(exercise.name || '').trim()
           )
         : [];
+
+const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const computeRollingAverage = (previousValue, previousCount, nextValue) => {
+    const safeCount = Number.isInteger(previousCount) ? Math.max(0, previousCount) : 0;
+    const hasPrevious = Number.isFinite(previousValue);
+    if (safeCount <= 0 || !hasPrevious) return nextValue;
+    return ((previousValue * safeCount) + nextValue) / (safeCount + 1);
+};
 
 // Animated progress dots
 const ProgressDots = ({ total, current }) => (
@@ -92,6 +107,8 @@ const FitScreen = () => {
         setMinutes,
         setWorkout,
         markDayCompleted,
+        saveProgramAdaptation,
+        getProgramAdaptation,
         saveInProgressWorkout,
         clearInProgressWorkout,
         startRestTimer,
@@ -239,6 +256,172 @@ const FitScreen = () => {
         return broken;
     };
 
+    const promptSessionDifficulty = () =>
+        new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+            };
+            Alert.alert(
+                'Session check-in',
+                'How did this workout feel overall?',
+                [
+                    {
+                        text: 'Easy',
+                        onPress: () => finish({ rpe: 5.5, difficulty: 'too_easy' }),
+                    },
+                    {
+                        text: 'On target',
+                        onPress: () => finish({ rpe: 7, difficulty: 'just_right' }),
+                    },
+                    {
+                        text: 'Hard',
+                        onPress: () => finish({ rpe: 8.5, difficulty: 'too_hard' }),
+                    },
+                ],
+                {
+                    cancelable: true,
+                    onDismiss: () => finish({ rpe: 7, difficulty: 'just_right' }),
+                }
+            );
+        });
+
+    const promptPainPresence = () =>
+        new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+            };
+            Alert.alert(
+                'Any discomfort?',
+                'Did you feel pain or discomfort during this workout?',
+                [
+                    {
+                        text: 'No',
+                        onPress: () => finish(false),
+                    },
+                    {
+                        text: 'Yes',
+                        style: 'destructive',
+                        onPress: () => finish(true),
+                    },
+                ],
+                {
+                    cancelable: true,
+                    onDismiss: () => finish(false),
+                }
+            );
+        });
+
+    const promptPainArea = () =>
+        new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+            };
+            Alert.alert(
+                'Where was discomfort?',
+                'Pick the primary area so we can auto-adjust upcoming sessions.',
+                [
+                    {
+                        text: 'Lower body',
+                        onPress: () => finish(['knee_pain', 'ankle_pain']),
+                    },
+                    {
+                        text: 'Upper body',
+                        onPress: () => finish(['shoulder_pain', 'wrist_pain']),
+                    },
+                    {
+                        text: 'Back',
+                        onPress: () => finish(['lower_back_pain']),
+                    },
+                ],
+                {
+                    cancelable: true,
+                    onDismiss: () => finish([]),
+                }
+            );
+        });
+
+    const collectWorkoutFeedback = async (doneExercises) => {
+        const difficultyFeedback = await promptSessionDifficulty();
+        const hadPain = await promptPainPresence();
+        const painPoints = hadPain ? await promptPainArea() : [];
+        const completionRate = exercises.length
+            ? clampNumber(doneExercises.length / exercises.length, 0, 1)
+            : 1;
+
+        return {
+            at: new Date().toISOString(),
+            rpe: clampNumber(Number(difficultyFeedback?.rpe) || 7, 1, 10),
+            difficulty: difficultyFeedback?.difficulty || 'just_right',
+            completionRate,
+            painPoints: Array.isArray(painPoints) ? painPoints : [],
+        };
+    };
+
+    const saveSessionAdaptation = (feedback) => {
+        const safeProgramKey = String(programKey || '').trim();
+        if (!safeProgramKey || !feedback) return;
+
+        const previous = getProgramAdaptation(safeProgramKey) || {};
+        const prevSessions = Number.isInteger(previous.sessionsCompleted)
+            ? Math.max(0, previous.sessionsCompleted)
+            : 0;
+        const nextSessions = prevSessions + 1;
+        const difficultyScore = FEEDBACK_DIFFICULTY_SCORE[feedback.difficulty] || 2;
+        const previousAvgRpe = typeof previous.avgRpe === 'number' ? previous.avgRpe : NaN;
+        const previousAvgDifficulty = typeof previous.avgDifficultyScore === 'number' ? previous.avgDifficultyScore : NaN;
+        const previousAvgCompletion = typeof previous.avgCompletionRate === 'number' ? previous.avgCompletionRate : NaN;
+        const nextAvgRpe = computeRollingAverage(previousAvgRpe, prevSessions, feedback.rpe);
+        const nextAvgDifficultyScore = computeRollingAverage(
+            previousAvgDifficulty,
+            prevSessions,
+            difficultyScore
+        );
+        const nextAvgCompletionRate = computeRollingAverage(
+            previousAvgCompletion,
+            prevSessions,
+            feedback.completionRate
+        );
+        const previousHistory = Array.isArray(previous.feedbackHistory) ? previous.feedbackHistory : [];
+        const feedbackHistory = [...previousHistory, feedback].slice(-MAX_FEEDBACK_HISTORY);
+        const painPoints = [...new Set(
+            feedbackHistory
+                .slice(-6)
+                .flatMap((item) => (Array.isArray(item?.painPoints) ? item.painPoints : []))
+        )];
+        const fatigueDetected =
+            feedback.difficulty === 'too_hard' ||
+            feedback.rpe >= 8 ||
+            feedback.completionRate < 0.7 ||
+            painPoints.length > 0;
+        const readiness = fatigueDetected
+            ? 'fatigued'
+            : feedback.rpe <= 6
+                ? 'fresh'
+                : 'normal';
+
+        saveProgramAdaptation(safeProgramKey, {
+            readiness,
+            reportedFatigue: fatigueDetected,
+            sessionsCompleted: nextSessions,
+            avgRpe: Number(nextAvgRpe.toFixed(2)),
+            avgDifficultyScore: Number(nextAvgDifficultyScore.toFixed(2)),
+            avgCompletionRate: Number(nextAvgCompletionRate.toFixed(3)),
+            painPoints,
+            contraindications: painPoints,
+            lastSession: feedback,
+            feedbackHistory,
+        });
+    };
+
     const saveInProgressToBackend = async (payload) => {
         if (!user?.id) return;
 
@@ -296,6 +479,8 @@ const FitScreen = () => {
 
     const finishWorkout = async (allExercises) => {
         const doneExercises = Array.isArray(allExercises) ? allExercises : [...completed, current];
+        const sessionFeedback = await collectWorkoutFeedback(doneExercises);
+        saveSessionAdaptation(sessionFeedback);
         const result = await saveWorkoutObject(doneExercises);
 
         if (programKey && Number.isInteger(dayIndex)) {

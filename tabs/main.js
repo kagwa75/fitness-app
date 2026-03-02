@@ -13,8 +13,18 @@ import { Ionicons, Feather } from '@expo/vector-icons';
 import { useContext, useState, useRef, useEffect } from 'react';
 import { FitnessItems } from '../Context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation } from '@react-navigation/native';
+import { buildWeeklySchedule, generateWorkoutPlan } from '../utils/Workoutgenerator';
 
 const { width } = Dimensions.get('window');
+const GOAL_CTA_LABEL = {
+    lose_weight: 'Start Cutting 🔥',
+    build_muscle: 'Start Building 💪',
+    gain_weight: 'Start Building 💪',
+    maintain_fitness: 'Maintain & Optimize ⚡',
+};
+
+const getMondayBasedDayIndex = () => (new Date().getDay() + 6) % 7;
 
 // Animated stat card component
 const StatCard = ({ value, label, icon, delay = 0, accentColor = '#FF4D2E' }) => {
@@ -58,7 +68,9 @@ const StatCard = ({ value, label, icon, delay = 0, accentColor = '#FF4D2E' }) =>
 
 const HomeScreen = () => {
     const [isDark, setIsDark] = useState(true);
-    const { calories, minutes, workout } = useContext(FitnessItems);
+    const { calories, minutes, workout, userProfile, getCompletedDaysForProgram } = useContext(FitnessItems);
+    const [todayPlanLabel, setTodayPlanLabel] = useState('');
+    const [isTodayPlanLoading, setIsTodayPlanLoading] = useState(false);
     const headerAnim = useRef(new Animated.Value(-20)).current;
     const headerOpacity = useRef(new Animated.Value(0)).current;
 
@@ -82,6 +94,68 @@ const HomeScreen = () => {
         month: 'short',
         day: 'numeric',
     });
+    const navigation = useNavigation();
+    const hasProfile = Boolean(userProfile);
+    const personalizedCompletedDays = getCompletedDaysForProgram('personalized');
+    const adherenceRate = Math.min(1, personalizedCompletedDays.length / 4);
+    const ctaTitle = hasProfile
+        ? GOAL_CTA_LABEL[userProfile?.goal] || 'Start Personalized Workout'
+        : 'Set Up Personalized Plan';
+    const ctaBody = hasProfile
+        ? isTodayPlanLoading
+            ? 'Building today\'s workout...'
+            : todayPlanLabel || 'Built from your goal, level, and equipment.'
+        : 'Answer a few questions to generate your training plan.';
+
+    const handlePersonalizedPress = () => {
+        navigation.navigate(hasProfile ? 'PersonalizedPlan' : 'Onboarding');
+    };
+
+    useEffect(() => {
+        let isActive = true;
+
+        const loadTodayPlanLabel = async () => {
+            if (!userProfile) {
+                if (isActive) {
+                    setTodayPlanLabel('');
+                    setIsTodayPlanLoading(false);
+                }
+                return;
+            }
+
+            setIsTodayPlanLoading(true);
+            try {
+                const plan = await generateWorkoutPlan(userProfile, { adherenceRate });
+                const schedule = buildWeeklySchedule(plan);
+                const todayIndex = getMondayBasedDayIndex();
+                const todayEntry = schedule[todayIndex];
+
+                let nextLabel = 'Today\'s personalized workout is ready.';
+                if (todayEntry?.isRest) {
+                    const upcoming = schedule.find(
+                        (item, index) => !item.isRest && index > todayIndex
+                    ) || schedule.find((item) => !item.isRest);
+
+                    nextLabel = upcoming?.label
+                        ? `Rest day today · Next: ${upcoming.label}`
+                        : 'Rest day today.';
+                } else if (todayEntry?.label) {
+                    nextLabel = `Today: ${todayEntry.label}`;
+                }
+
+                if (isActive) setTodayPlanLabel(nextLabel);
+            } catch (error) {
+                if (isActive) setTodayPlanLabel('Personalized plan is ready for review.');
+            } finally {
+                if (isActive) setIsTodayPlanLoading(false);
+            }
+        };
+
+        loadTodayPlanLabel();
+        return () => {
+            isActive = false;
+        };
+    }, [userProfile, adherenceRate]);
 
     return (
         <View style={styles.container}>
@@ -183,8 +257,33 @@ const HomeScreen = () => {
                 style={styles.scrollBody}
                 contentContainerStyle={{ paddingBottom: 40 }}
             >
+                <TouchableOpacity
+                    onPress={handlePersonalizedPress}
+                    activeOpacity={0.9}
+                    style={styles.primaryCtaWrap}
+                >
+                    <LinearGradient
+                        colors={['#FF4D2E', '#FF7A2E']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.primaryCta}
+                    >
+                        <View style={styles.primaryCtaCopy}>
+                            <Text style={styles.primaryCtaEyebrow}>PRIMARY CTA · PERSONALIZED</Text>
+                            <Text style={styles.primaryCtaTitle}>{ctaTitle}</Text>
+                            <Text style={styles.primaryCtaBody}>{ctaBody}</Text>
+                        </View>
+                        <View style={styles.primaryCtaArrow}>
+                            <Feather name="arrow-right" size={18} color="#fff" />
+                        </View>
+                    </LinearGradient>
+                </TouchableOpacity>
+
                 <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>PROGRAMS</Text>
+                    <View>
+                        <Text style={styles.sectionTitle}>EXPLORE PROGRAMS</Text>
+                        <Text style={styles.sectionSubTitle}>Secondary path</Text>
+                    </View>
                     <TouchableOpacity>
                         <Text style={styles.seeAll}>See all</Text>
                     </TouchableOpacity>
@@ -331,6 +430,55 @@ const styles = StyleSheet.create({
         flex: 1,
         marginTop: 6,
     },
+    primaryCtaWrap: {
+        paddingHorizontal: 22,
+        paddingTop: 18,
+    },
+    primaryCta: {
+        borderRadius: 22,
+        paddingHorizontal: 18,
+        paddingVertical: 18,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        shadowColor: '#FF4D2E',
+        shadowOpacity: 0.26,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+        elevation: 6,
+    },
+    primaryCtaCopy: {
+        flex: 1,
+        paddingRight: 10,
+    },
+    primaryCtaEyebrow: {
+        color: 'rgba(255,255,255,0.82)',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.2,
+        marginBottom: 6,
+    },
+    primaryCtaTitle: {
+        color: '#fff',
+        fontSize: 20,
+        fontWeight: '900',
+        letterSpacing: -0.4,
+    },
+    primaryCtaBody: {
+        color: 'rgba(255,255,255,0.9)',
+        fontSize: 12,
+        marginTop: 4,
+    },
+    primaryCtaArrow: {
+        width: 38,
+        height: 38,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.32)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(255,255,255,0.12)',
+    },
     sectionHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -344,6 +492,12 @@ const styles = StyleSheet.create({
         fontWeight: '800',
         color: '#999',
         letterSpacing: 2,
+    },
+    sectionSubTitle: {
+        marginTop: 4,
+        fontSize: 12,
+        color: '#8D8D99',
+        fontWeight: '500',
     },
     seeAll: {
         fontSize: 13,
