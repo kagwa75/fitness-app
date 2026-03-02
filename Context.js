@@ -108,7 +108,15 @@ const sanitizeUserProfile = (value) => {
   const gender       = String(value.gender || "").trim();
   const goal         = String(value.goal || "").trim();
   const fitnessLevel = String(value.fitnessLevel || "").trim();
-
+  const workoutLocation = String(value.workoutLocation || "").trim();
+  const equipment = Array.isArray(value.equipment) ? value.equipment : [];
+const focusAreas = Array.isArray(value.focusAreas) ? value.focusAreas : [];
+const name      = String(value.name || '').trim();
+const bodyFat   = value.bodyFat !== null && value.bodyFat !== undefined
+    ? Number(value.bodyFat)
+    : null;
+const heightFt  = value.heightFt !== undefined ? Number(value.heightFt) : undefined;
+const heightIn  = value.heightIn !== undefined ? Number(value.heightIn) : undefined;
   if (!Number.isInteger(age) || age < 10 || age > 120) return null;
   if (!Number.isFinite(weight) || weight <= 0 || weight > 500) return null;
   if (!VALID_GENDERS.has(gender)) return null;
@@ -126,6 +134,13 @@ const sanitizeUserProfile = (value) => {
     activityLevel: activityLevel || "sedentary",
     fitnessLevel,
     updatedAt: value.updatedAt || new Date().toISOString(),
+    workoutLocation: workoutLocation || "home",
+    equipment: equipment.filter(e => typeof e === "string" && e.trim()),
+    focusAreas: focusAreas.filter(f => typeof f === "string" && f.trim()),
+    name: name || null,
+    bodyFat: Number.isFinite(bodyFat) && bodyFat > 0 && bodyFat < 100 ? bodyFat : null,
+    heightFt: Number.isFinite(heightFt) && heightFt >= 0 ? heightFt : null,
+    heightIn: Number.isFinite(heightIn) && heightIn >= 0 ? heightIn : null,
   };
 };
 
