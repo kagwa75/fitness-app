@@ -156,7 +156,7 @@ const CompactCard = ({ item, index, accent, onPress }) => {
     const [imageLoadFailed, setImageLoadFailed] = useState(false);
     const imageUri = typeof item?.image === 'string' ? item.image.trim() : '';
     const shouldShowImage = !!imageUri && !imageLoadFailed;
-
+const programsWithoutDays = ['chest', 'back', 'shoulders'];
     useEffect(() => {
         setImageLoadFailed(false);
     }, [imageUri]);
@@ -200,8 +200,14 @@ const CompactCard = ({ item, index, accent, onPress }) => {
                             <Text style={styles.compactCategory}>{item.category?.toUpperCase()}</Text>
                         </View>
                         <View style={styles.compactRight}>
+                            {!programsWithoutDays.includes(String(item.category || '').trim().toLowerCase()) && (
+                            <>
                             <Text style={styles.compactDays}>{item.days?.length ?? 0}</Text>
                             <Text style={styles.compactDaysLabel}>DAYS</Text>
+                            </>
+                                
+                            )}
+                            
                         </View>
                     </View>
 
@@ -220,12 +226,17 @@ const FitnessCards = () => {
     const navigation = useNavigation();
 
     const handleNavigate = (item) => {
+        const categoryKey = String(item.category || '').trim().toLowerCase();
+        const isNoDays = ['chest', 'back', 'shoulders'].includes(categoryKey);
+
         navigation.navigate('Days', {
             item: FitnessData,
             Days: item.days,
             image: item.image,
             list: item.category,
             category: item.name.toLowerCase(),
+            initialMode: isNoDays ? 'single' : undefined,
+            autoStart: false,
         });
     };
 

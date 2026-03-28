@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react';
 import {
     FlatList,
     Text,
@@ -9,28 +9,53 @@ import {
     TextInput,
     TouchableOpacity,
     StatusBar,
-    Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import ExerciseCard from '../components/ExerciseCard';
 import Workouts from '../data/exercises';
-
-const { width } = Dimensions.get('window');
+import API_BASE_URL from '../constants/api';
+import { readCache, writeCache, isCacheFresh } from '../utils/localCache';
+import { fetchAllApiExercises, getExerciseApiEndpoints, normalizeApiExercise } from '../utils/exerciseApi';
+import { EXERCISES_CACHE_KEY, EXERCISES_CACHE_TTL_MS } from '../constants/cache';
 
 const ACCENT_MAP = {
-    All: { color: '#FF4D2E', icon: 'lightning-bolt' },
-    Chest: { color: '#FF4D8C', icon: 'heart-pulse' },
-    Back: { color: '#00E5BE', icon: 'human-handsdown' },
-    Legs: { color: '#6C63FF', icon: 'run' },
-    Arms: { color: '#FFB800', icon: 'arm-flex' },
-    Shoulders: { color: '#00C2FF', icon: 'human-queue' },
-    Core: { color: '#FF6B35', icon: 'circle-outline' },
-    Cardio: { color: '#FF4D2E', icon: 'heart' },
+    all: { color: '#FF4D2E', icon: 'lightning-bolt' },
+    chest: { color: '#FF4D8C', icon: 'heart-pulse' },
+    back: { color: '#00E5BE', icon: 'human-handsdown' },
+    legs: { color: '#6C63FF', icon: 'run' },
+    arms: { color: '#FFB800', icon: 'arm-flex' },
+    shoulders: { color: '#00C2FF', icon: 'human-queue' },
+    core: { color: '#FF6B35', icon: 'circle-outline' },
+    cardio: { color: '#FF4D2E', icon: 'heart' },
+    'full body': { color: '#FF4D2E', icon: 'dumbbell' },
 };
 
-const getCategoryAccent = (cat) => ACCENT_MAP[cat] || { color: '#FF4D2E', icon: 'dumbbell' };
+const FALLBACK_IMAGE = 'https://sworkit.com/wp-content/uploads/2020/06/sworkit-jumping-jack.gif';
+const FALLBACK_ACCENT = { color: '#FF4D2E', icon: 'dumbbell' };
+const API_ENDPOINT_CANDIDATES = getExerciseApiEndpoints(API_BASE_URL);
+const PAGE_SIZE = 30;
+
+const normalizeText = (value) => String(value || '').trim();
+const normalizeKey = (value) => normalizeText(value).toLowerCase();
+const toTitleCase = (value) =>
+    normalizeText(value)
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+
+const normalizeCategoryLabel = (value) => toTitleCase(value || 'Other');
+const getCategoryAccent = (cat) => ACCENT_MAP[normalizeKey(cat)] || FALLBACK_ACCENT;
+
+const normalizeLocalExercise = (exercise, index) => ({
+    ...exercise,
+    id: exercise?.id || `local-${index}`,
+    name: normalizeText(exercise?.name),
+    category: normalizeCategoryLabel(exercise?.category),
+    image: normalizeText(exercise?.image) || FALLBACK_IMAGE,
+});
 
 // ── Category chip ──────────────────────────────────────────────
 const CategoryChip = ({ label, isActive, onPress }) => {
@@ -108,53 +133,129 @@ const EmptyState = ({ query }) => {
     );
 };
 
+const ExerciseRow = memo(({ item, accentColor }) => {
+    const itemAnim = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        Animated.timing(itemAnim, {
+            toValue: 1,
+            duration: 320,
+            useNativeDriver: true,
+        }).start();
+    }, [itemAnim]);
+
+    return (
+        <Animated.View
+            style={{
+                opacity: itemAnim,
+                transform: [
+                    {
+                        translateY: itemAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [16, 0],
+                        }),
+                    },
+                ],
+            }}
+        >
+            <ExerciseCard
+                data={item}
+                image={item.image}
+                accentColor={accentColor}
+            />
+        </Animated.View>
+    );
+});
+
 // ── Main screen ────────────────────────────────────────────────
 export default function Exercises() {
     const [refreshing, setRefreshing] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('All');
-    const [filteredWorkouts, setFilteredWorkouts] = useState(Workouts);
+    const [apiExercises, setApiExercises] = useState([]);
     const [searchFocused, setSearchFocused] = useState(false);
+    const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
     const scrollY = useRef(new Animated.Value(0)).current;
     const searchScale = useRef(new Animated.Value(1)).current;
-    const headerY = useRef(new Animated.Value(0)).current;
-    const headerOpacity = useRef(new Animated.Value(1)).current;
+    const localExercises = useMemo(
+        () => Workouts.map((item, index) => normalizeLocalExercise(item, index)),
+        []
+    );
+    const allExercises = useMemo(() => [...localExercises, ...apiExercises], [localExercises, apiExercises]);
+    const categories = useMemo(
+        () => ['All', ...new Set(allExercises.map((item) => item.category).filter(Boolean))],
+        [allExercises]
+    );
 
-    const categories = ['All', ...new Set(Workouts.map((item) => item.category))];
+    const loadApiExercises = useCallback(async ({ force = false } = {}) => {
+        let cached = null;
+        if (!force) {
+            cached = await readCache(EXERCISES_CACHE_KEY);
+            if (isCacheFresh(cached, EXERCISES_CACHE_TTL_MS) && Array.isArray(cached?.data)) {
+                setApiExercises(cached.data);
+                return;
+            }
+        }
 
+        for (const endpoint of [...new Set(API_ENDPOINT_CANDIDATES)]) {
+            try {
+                const rows = await fetchAllApiExercises(endpoint);
+                const normalized = rows.map((item, index) => normalizeApiExercise(item, index));
+                setApiExercises(normalized);
+                await writeCache(EXERCISES_CACHE_KEY, normalized);
+                return;
+            } catch (error) {
+                console.warn(`Failed to fetch from ${endpoint}:`, error);
+            }
+        }
+        if (Array.isArray(cached?.data)) {
+            setApiExercises(cached.data);
+        } else {
+            setApiExercises([]);
+        }
+    }, []);
+// Initial load
     useEffect(() => {
-        let results = Workouts;
+        loadApiExercises();
+    }, [loadApiExercises]);
+//filtering based on search and category
+    const filteredWorkouts = useMemo(() => {
+        let results = allExercises;
+        const normalizedQuery = normalizeKey(searchQuery);
+
         if (searchQuery) {
             results = results.filter(
                 (item) =>
-                    item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                    item.category.toLowerCase().includes(searchQuery.toLowerCase())
+                    normalizeKey(item?.name).includes(normalizedQuery) ||
+                    normalizeKey(item?.category).includes(normalizedQuery) ||
+                    normalizeKey(item?.target).includes(normalizedQuery)
             );
         }
         if (selectedCategory !== 'All') {
-            results = results.filter((item) => item.category === selectedCategory);
+            results = results.filter(
+                (item) => normalizeKey(item?.category) === normalizeKey(selectedCategory)
+            );
         }
-        setFilteredWorkouts(results);
-    }, [searchQuery, selectedCategory]);
+        return results;
+    }, [allExercises, searchQuery, selectedCategory]);
 
-    // Collapse header on scroll
-    const headerTranslateY = scrollY.interpolate({
-        inputRange: [0, 70],
-        outputRange: [0, -70],
-        extrapolate: 'clamp',
-    });
-    const headerFade = scrollY.interpolate({
-        inputRange: [0, 60],
-        outputRange: [1, 0],
-        extrapolate: 'clamp',
-    });
+    useEffect(() => {
+        setVisibleCount(PAGE_SIZE);
+    }, [searchQuery, selectedCategory, allExercises.length]);
 
-    const onRefresh = () => {
+    const visibleWorkouts = useMemo(
+        () => filteredWorkouts.slice(0, visibleCount),
+        [filteredWorkouts, visibleCount]
+    );
+    const canLoadMore = visibleCount < filteredWorkouts.length;
+//pull to refresh handler
+    const onRefresh = async () => {
         setRefreshing(true);
-        setTimeout(() => setRefreshing(false), 1000);
+        await loadApiExercises({ force: true });
+        setRefreshing(false);
     };
-
+//adding animation to search bar on focus
     const handleSearchFocus = () => {
         setSearchFocused(true);
         Animated.spring(searchScale, { toValue: 1.02, useNativeDriver: true, tension: 200 }).start();
@@ -163,6 +264,21 @@ export default function Exercises() {
         setSearchFocused(false);
         Animated.spring(searchScale, { toValue: 1, useNativeDriver: true, tension: 200 }).start();
     };
+
+    const handleEndReached = useCallback(() => {
+        if (!canLoadMore) return;
+        setVisibleCount((prev) => Math.min(filteredWorkouts.length, prev + PAGE_SIZE));
+    }, [canLoadMore, filteredWorkouts.length]);
+
+    const renderExerciseItem = useCallback(
+        ({ item }) => (
+            <ExerciseRow
+                item={item}
+                accentColor={getCategoryAccent(item.category).color}
+            />
+        ),
+        []
+    );
 
     const activeAccent = getCategoryAccent(selectedCategory).color;
 
@@ -177,14 +293,10 @@ export default function Exercises() {
             />
 
             <SafeAreaView style={{ flex: 1 }}>
-                {/* ── Page title (collapses on scroll) ── */}
+                {/* ── Page title  ── */}
                 <Animated.View
                     style={[
-                        styles.pageTitleRow,
-                        {
-                            opacity: headerFade,
-                            transform: [{ translateY: headerTranslateY }],
-                        },
+                        styles.pageTitleRow
                     ]}
                 >
                     <View>
@@ -194,7 +306,7 @@ export default function Exercises() {
                         </View>
                         <Text style={styles.pageTitle}>Exercises</Text>
                     </View>
-                    <StatBadge count={filteredWorkouts.length} total={Workouts.length} />
+                    <StatBadge count={visibleWorkouts.length} total={allExercises.length} />
                 </Animated.View>
 
                 {/* ── Search bar ── */}
@@ -262,8 +374,8 @@ export default function Exercises() {
 
                 {/* ── Exercise list ── */}
                 <Animated.FlatList
-                    data={filteredWorkouts}
-                    keyExtractor={(_, index) => index.toString()}
+                    data={visibleWorkouts}
+                    keyExtractor={(item, index) => String(item?.id || index)}
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={styles.listContent}
                     scrollEventThrottle={16}
@@ -271,6 +383,12 @@ export default function Exercises() {
                         [{ nativeEvent: { contentOffset: { y: scrollY } } }],
                         { useNativeDriver: true }
                     )}
+                    initialNumToRender={PAGE_SIZE}
+                    maxToRenderPerBatch={PAGE_SIZE}
+                    windowSize={7}
+                    removeClippedSubviews
+                    onEndReachedThreshold={0.4}
+                    onEndReached={handleEndReached}
                     refreshControl={
                         <RefreshControl
                             refreshing={refreshing}
@@ -281,37 +399,7 @@ export default function Exercises() {
                     }
                     ListEmptyComponent={<EmptyState query={searchQuery} />}
                     ListFooterComponent={<View style={{ height: 100 }} />}
-                    renderItem={({ item, index }) => {
-                        const itemAnim = new Animated.Value(0);
-                        Animated.timing(itemAnim, {
-                            toValue: 1,
-                            duration: 400,
-                            delay: index * 50,
-                            useNativeDriver: true,
-                        }).start();
-
-                        return (
-                            <Animated.View
-                                style={{
-                                    opacity: itemAnim,
-                                    transform: [
-                                        {
-                                            translateY: itemAnim.interpolate({
-                                                inputRange: [0, 1],
-                                                outputRange: [20, 0],
-                                            }),
-                                        },
-                                    ],
-                                }}
-                            >
-                                <ExerciseCard
-                                    data={item}
-                                    image={item.image}
-                                    accentColor={getCategoryAccent(item.category).color}
-                                />
-                            </Animated.View>
-                        );
-                    }}
+                    renderItem={renderExerciseItem}
                 />
             </SafeAreaView>
         </View>

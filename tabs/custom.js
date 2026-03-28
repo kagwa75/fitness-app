@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
     Alert,
     KeyboardAvoidingView,
@@ -22,16 +22,14 @@ import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
 import Workouts from '../data/exercises';
 import API_BASE_URL from '../constants/api';
+import { readCache, writeCache, isCacheFresh } from '../utils/localCache';
+import { fetchAllApiExercises, formatCategory, getExerciseApiEndpoints, mapApiExerciseToLibrary } from '../utils/exerciseApi';
+import { API_LIBRARY_CACHE_KEY, API_LIBRARY_CACHE_TTL_MS } from '../constants/cache';
 
 const FOLDERS_STORAGE_KEY_PREFIX = 'custom_workout_folders_v1';
 const LEGACY_EXERCISES_KEY = 'custom_workout_exercises_v1';
 const normalizeText = (value = '') => String(value).trim().toLowerCase();
-
-const formatCategory = (category = 'general') => {
-    const safe = String(category).trim();
-    if (!safe) return 'General';
-    return safe.charAt(0).toUpperCase() + safe.slice(1);
-};
+const API_EXERCISE_ENDPOINT_CANDIDATES = getExerciseApiEndpoints(API_BASE_URL);
 
 const createId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -150,6 +148,14 @@ const mapDatabaseFolder = (folder) =>
         createdAt: folder?.createdAt,
         updatedAt: folder?.updatedAt,
     });
+
+const mapLocalExerciseToLibrary = (item) => ({
+    sourceId: String(item.id ?? item.name),
+    name: String(item.name || '').trim(),
+    categoryLabel: formatCategory(item.target || item.category),
+    defaultSets: item.sets != null ? String(item.sets) : '',
+    defaultReps: item.duration != null ? String(item.duration) : '',
+});
 
 const buildFolderApiErrorMessage = (error, action) => {
     const status = error?.response?.status;
@@ -288,7 +294,7 @@ const FolderCard = ({ folder, isExpanded, onToggle, onRename, onEdit, onDelete, 
                         </View>
                     ))
                 )}
-
+{/* Action buttons row */}
                 <View style={styles.folderActionsRow}>
                     <TouchableOpacity
                         onPress={() => onStart(folder)}
@@ -425,6 +431,8 @@ export default function Custom() {
     const [folderName, setFolderName] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedExercises, setSelectedExercises] = useState([]);
+    const [apiLibraryExercises, setApiLibraryExercises] = useState([]);
+    const [apiLibraryLoading, setApiLibraryLoading] = useState(false);
 
     useEffect(() => {
         let isMounted = true;
@@ -481,17 +489,56 @@ export default function Custom() {
         };
     }, [clerkUserId, foldersStorageKey]);
 
-    const libraryExercises = useMemo(() => {
-        return Workouts.map((item) => ({
-            sourceId: String(item.id ?? item.name),
-            name: String(item.name || '').trim(),
-            categoryLabel: formatCategory(item.category),
-            defaultSets: item.sets != null ? String(item.sets) : '',
-            defaultReps: item.duration != null ? String(item.duration) : '',
-        }))
-            .filter((item) => item.name)
-            .sort((a, b) => a.name.localeCompare(b.name));
+    const loadApiLibraryExercises = useCallback(async ({ force = false } = {}) => {
+        setApiLibraryLoading(true);
+        let cached = null;
+        if (!force) {
+            cached = await readCache(API_LIBRARY_CACHE_KEY);
+            if (isCacheFresh(cached, API_LIBRARY_CACHE_TTL_MS) && Array.isArray(cached?.data)) {
+                setApiLibraryExercises(cached.data);
+                setApiLibraryLoading(false);
+                return;
+            }
+        }
+        for (const endpoint of [...new Set(API_EXERCISE_ENDPOINT_CANDIDATES)]) {
+            try {
+                const rows = await fetchAllApiExercises(endpoint);
+                const mapped = rows.map((item, index) => mapApiExerciseToLibrary(item, index)).filter((item) => item.name);
+                setApiLibraryExercises(mapped);
+                await writeCache(API_LIBRARY_CACHE_KEY, mapped);
+                setApiLibraryLoading(false);
+                return;
+            } catch (error) {
+                // try next endpoint candidate
+                console.warn(`Failed to fetch exercises from ${endpoint}:`, error);
+            }
+        }
+        if (Array.isArray(cached?.data)) {
+            setApiLibraryExercises(cached.data);
+        } else {
+            setApiLibraryExercises([]);
+        }
+        setApiLibraryLoading(false);
     }, []);
+
+    useEffect(() => {
+        loadApiLibraryExercises();
+    }, [loadApiLibraryExercises]);
+
+    const libraryExercises = useMemo(() => {
+        const localLibrary = Workouts.map((item) => mapLocalExerciseToLibrary(item)).filter((item) => item.name);
+        const combined = [...localLibrary, ...apiLibraryExercises];
+        const seen = new Set();
+
+        return combined
+            .filter((item) => {
+                const key = String(item.sourceId);
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            })
+            .sort((a, b) => a.name.localeCompare(b.name));
+    }, [apiLibraryExercises]);
 
     const filteredLibrary = useMemo(() => {
         const query = normalizeText(searchQuery);
@@ -955,6 +1002,9 @@ export default function Custom() {
                                     <Text style={styles.resultsCountText}>
                                         {filteredLibrary.length} result{filteredLibrary.length === 1 ? '' : 's'}
                                     </Text>
+                                    {apiLibraryLoading ? (
+                                        <Text style={styles.resultsHintText}>Loading API exercises...</Text>
+                                    ) : null}
 
                                     {filteredLibrary.length === 0 ? (
                                         <View style={styles.inlineEmptyState}>
@@ -1390,6 +1440,12 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         letterSpacing: 0.5,
         textTransform: 'uppercase',
+    },
+    resultsHintText: {
+        marginTop: 4,
+        color: '#6FA8B9',
+        fontSize: 11,
+        fontWeight: '600',
     },
     libraryRow: {
         marginTop: 8,

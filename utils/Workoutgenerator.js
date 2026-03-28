@@ -270,7 +270,7 @@ function applyParams(exercise, goalParams, fitnessLevel, goal, options = {}) {
   }
   base.goalTag = goal;
   base.gifUrl = base.gifUrl || base.image || '';
-
+console.log('Applied params to exercise:', { name: base.name, sets: base.sets, reps: base.reps, rest: base.rest, intensityPct1RM: base.intensityPct1RM, rpeTarget: base.rpeTarget });
   return base;
 }
 
@@ -287,15 +287,16 @@ function seededShuffle(arr, seed) {
   }
   return a;
 }
-
+//checks the weekly microcycle based on the user's profile update date to add variation across weeks, even if the profile data doesn't change
 function resolveMicroCycle(updatedAt, nowTime = Date.now()) {
   const reference = updatedAt ? new Date(updatedAt) : new Date();
   const referenceTime = Number.isNaN(reference.getTime()) ? Date.now() : reference.getTime();
   const diffDays = Math.max(0, Math.floor((nowTime - referenceTime) / 86400000));
   const index = Math.floor(diffDays / 7) % MICRO_CYCLE.length;
+  console.log('Resolved micro cycle:', { updatedAt, nowTime, diffDays, index, cycle: MICRO_CYCLE[index] });
   return MICRO_CYCLE[index];
 }
-
+//checks the mesocycle based on the user's profile update date to add variation across weeks, even if the profile data doesn't change
 function resolveMesoCycle(updatedAt, nowTime = Date.now()) {
   const reference = updatedAt ? new Date(updatedAt) : new Date();
   const referenceTime = Number.isNaN(reference.getTime()) ? Date.now() : reference.getTime();
@@ -303,6 +304,7 @@ function resolveMesoCycle(updatedAt, nowTime = Date.now()) {
   const totalWeeks = Math.floor(diffDays / 7);
   const index = totalWeeks % MESO_CYCLE.length;
   const cycleNumber = Math.floor(totalWeeks / MESO_CYCLE.length) + 1;
+  console.log('Resolved meso cycle:', { updatedAt, nowTime, diffDays, totalWeeks, index, cycleNumber, cycle: MESO_CYCLE[index] });
   return {
     ...MESO_CYCLE[index],
     cycleNumber,
@@ -330,20 +332,20 @@ function resolveProfileModifiers(userProfile) {
   const weightKg = Number.isFinite(weight)
     ? (weightUnit === 'lb' || weightUnit === 'lbs' ? weight * 0.45359237 : weight)
     : null;
-
+//condition one: older adults may need reduced volume and increased rest, with a slight bias towards less intense work
   if (Number.isFinite(age) && age >= 45) {
     volume *= 0.92;
     rest *= 1.1;
     exerciseCountDelta -= 1;
   }
-
+//condition two: lower activity levels may require reduced volume, while very active individuals might benefit from a slight increase and an extra exercise
   if (activityLevel === 'sedentary' || activityLevel === 'light') {
     volume *= 0.95;
   } else if (activityLevel === 'very_active') {
     volume *= 1.05;
     exerciseCountDelta += 1;
   }
-
+//condition three: higher body fat percentages can impact recovery and performance, so we reduce volume and increase rest, with a stronger cardio bias for those with elevated levels
   if (Number.isFinite(bodyFat) && bodyFat >= 30) {
     const highBodyFatThreshold = gender === 'female'
       ? 36
@@ -357,7 +359,7 @@ function resolveProfileModifiers(userProfile) {
       cardioBias *= 1.08;
     }
   }
-
+//condition four: weight extremes can influence exercise tolerance and recovery, so we adjust volume and rest accordingly, with a cardio bias increase for those at higher weights
   if (Number.isFinite(weightKg)) {
     if (weightKg <= 52) {
       volume *= 0.96;
@@ -368,7 +370,7 @@ function resolveProfileModifiers(userProfile) {
       cardioBias *= 1.05;
     }
   }
-
+//condition five: workout location can impact exercise selection and intensity, with outdoor workouts benefiting from a cardio bias increase, home workouts with limited equipment leading to a reduction in exercise count, and gym workouts allowing for an increase in exercise count due to greater equipment variety
   if (workoutLocation === 'outdoors') {
     cardioBias *= 1.15;
   } else if (workoutLocation === 'home' && equipmentCount <= 1) {
@@ -376,7 +378,7 @@ function resolveProfileModifiers(userProfile) {
   } else if (workoutLocation === 'gym') {
     exerciseCountDelta += 1;
   }
-
+console.log('Resolved profile modifiers:', { age, bodyFat, activityLevel, workoutLocation, weightKg,gender, volume, rest, cardioBias, exerciseCountDelta });  
   return {
     volume,
     rest,
@@ -384,7 +386,8 @@ function resolveProfileModifiers(userProfile) {
     exerciseCountDelta,
   };
 }
-
+//this function takes all the goal parameters and user profile modifiers to calculate the final sets, reps, rest, and intensity adjustments for a given goal.
+//It also factors in adherence and fatigue signals to further tailor the plan to the user's current state.
 function resolveGoalParams(goal, userProfile, adaptation = {}) {
   const base = GOAL_PARAMS[goal] ?? GOAL_PARAMS.maintain_fitness;
   const referenceDate = adaptation?.referenceDate ? new Date(adaptation.referenceDate).getTime() : Date.now();
@@ -407,6 +410,26 @@ function resolveGoalParams(goal, userProfile, adaptation = {}) {
   const avgDifficultyScore = Number(adaptation?.avgDifficultyScore);
   const avgCompletionRate = Number(adaptation?.avgCompletionRate);
   const painPointsCount = Array.isArray(adaptation?.painPoints) ? adaptation.painPoints.length : 0;
+  const lastSession = adaptation?.lastSession || {};
+  const lastSessionAt = Date.parse(lastSession?.at || '');
+  const recentWindowMs = 7 * 24 * 60 * 60 * 1000;
+  const recentIsValid = Number.isFinite(lastSessionAt) && (nowTime - lastSessionAt) <= recentWindowMs;
+  const recentRpe = Number(lastSession?.rpe);
+  const recentCompletion = Number(lastSession?.completionRate);
+  const recentDifficulty = normalizeKey(lastSession?.difficulty);
+  const recentWasHard = recentIsValid && (
+    recentDifficulty === 'too_hard' ||
+    (Number.isFinite(recentRpe) && recentRpe >= 8) ||
+    (Number.isFinite(recentCompletion) && recentCompletion <= 0.7)
+  );
+  const recentWasEasy = recentIsValid && (
+    recentDifficulty === 'too_easy' ||
+    ((Number.isFinite(recentRpe) && recentRpe <= 6) && (Number.isFinite(recentCompletion) ? recentCompletion >= 0.9 : true))
+  );
+  const recentVolumeFactor = recentWasHard ? 0.92 : recentWasEasy ? 1.04 : 1;
+  const recentRestFactor = recentWasHard ? 1.08 : recentWasEasy ? 0.96 : 1;
+  const recentLoadFactor = recentWasHard ? 0.94 : recentWasEasy ? 1.04 : 1;
+  const recentRpeShift = recentWasHard ? -0.4 : recentWasEasy ? 0.2 : 0;
   const fatigueSignals = [
     adaptation?.reportedFatigue === true,
     Number.isFinite(avgRpe) && avgRpe >= 8,
@@ -423,9 +446,7 @@ function resolveGoalParams(goal, userProfile, adaptation = {}) {
     Number.isFinite(avgDifficultyScore) &&
     avgDifficultyScore <= 1.8
   ) ? 1.04 : 1;
-
-  return {
-    sets: clampNumber(
+  const response={sets:clampNumber(
       Math.round(
         base.sets *
         cycle.volume *
@@ -433,39 +454,52 @@ function resolveGoalParams(goal, userProfile, adaptation = {}) {
         modifiers.volume *
         adherenceVolume *
         fatiguePenalty *
-        readinessBonus
+        readinessBonus *
+        recentVolumeFactor
       ),
       2,
       7
-    ),
-    reps: clampNumber(
+    ),reps: clampNumber(
       Math.round(
         base.reps *
         cycle.volume *
         mesoCycle.volume *
         modifiers.volume *
         adherenceVolume *
-        fatiguePenalty
+        fatiguePenalty *
+        recentVolumeFactor
       ),
       6,
       20
-    ),
-    rest: clampNumber(
+    ),rest: clampNumber(
       Math.round(
         base.rest *
         cycle.rest *
         mesoCycle.rest *
         modifiers.rest *
-        fatigueRestBoost
+        fatigueRestBoost *
+        recentRestFactor
       ),
       30,
       210
-    ),
+    ),}
+console.log('Resolved goal parameters:', { response });
+  return {
+      ...response,
     intensity: base.intensity,
     cardioBias: modifiers.cardioBias,
-    loadBias: clampNumber(mesoCycle.intensity * readinessBonus * (1 / Math.max(fatiguePenalty, 0.85)), 0.75, 1.2),
+    loadBias: clampNumber(
+      mesoCycle.intensity *
+        readinessBonus *
+        recentLoadFactor *
+        (1 / Math.max(fatiguePenalty, 0.85)),
+      0.75,
+      1.2
+    ),
     rpeTarget: clampNumber(
-      (mesoCycle.phase === 'intensify' ? 8 : mesoCycle.phase === 'restore' ? 6.5 : 7.2) - (fatigueSignals >= 2 ? 0.6 : 0),
+      (mesoCycle.phase === 'intensify' ? 8 : mesoCycle.phase === 'restore' ? 6.5 : 7.2) -
+        (fatigueSignals >= 2 ? 0.6 : 0) +
+        recentRpeShift,
       5.5,
       9
     ),
@@ -477,7 +511,9 @@ function resolveGoalParams(goal, userProfile, adaptation = {}) {
     exerciseCountDelta: modifiers.exerciseCountDelta,
   };
 }
-
+//REMOVES exercises that may be unsafe for the user based on their profile limitations,
+//workout location, and other factors, by checking against blocked body parts and keywords,
+//as well as adjusting for preferred difficulty level.
 function applySafetyConstraints(exercises, userProfile, options = {}) {
   const safeExercises = Array.isArray(exercises) ? exercises : [];
   const age = Number(userProfile?.age);
@@ -496,7 +532,7 @@ function applySafetyConstraints(exercises, userProfile, options = {}) {
     const textBlob = normalizeText(
       `${exercise?.name || ''} ${exercise?.target || ''} ${exercise?.category || ''} ${exercise?.apiCategory || ''}`
     );
-
+console.log('Evaluating exercise safety:', {  exercise: exercise?.name, bodyParts, difficulty, textBlob, blockedBodyParts: Array.from(blockedBodyParts), blockedKeywords: Array.from(blockedKeywords) });
     if (bodyParts.some((part) => blockedBodyParts.has(part))) return false;
     for (const keyword of blockedKeywords) {
       if (textBlob.includes(keyword)) return false;
@@ -568,6 +604,9 @@ function resolveAdaptiveLimitations(userProfile, adaptation = {}) {
   const profileLimitations = Array.isArray(userProfile?.limitations) ? userProfile.limitations : [];
   const adaptationPainPoints = Array.isArray(adaptation?.painPoints) ? adaptation.painPoints : [];
   const contraindications = Array.isArray(adaptation?.contraindications) ? adaptation.contraindications : [];
+  console.log('Profile limitations:', profileLimitations);
+  console.log('Adaptation pain points:', adaptationPainPoints);
+  console.log('Adaptation contraindications:', contraindications);
   return normalizeLimitations([...profileLimitations, ...adaptationPainPoints, ...contraindications]);
 }
 
@@ -584,7 +623,12 @@ function buildLimitationSets(limitations) {
     (rule.blockedBodyParts || []).forEach((entry) => blockedBodyParts.add(normalizeBodyPart(entry)));
     (rule.blockedKeywords || []).forEach((entry) => blockedKeywords.add(normalizeText(entry)));
   });
-
+console.log('Resolved limitations:', {
+  limitations: normalized,
+  blockedCategories: Array.from(blockedCategories),
+  blockedBodyParts: Array.from(blockedBodyParts),
+  blockedKeywords: Array.from(blockedKeywords),
+});
   return { blockedCategories, blockedBodyParts, blockedKeywords };
 }
 
@@ -698,7 +742,7 @@ function normalizeUserEquipment(equipment) {
       .filter(Boolean)
   )];
 }
-
+// Maps detailed body parts to broader categories for better matching with exercise data.
 function mapBodyPartToCategory(bodyPart) {
   const v = normalizeText(bodyPart);
   if (v === 'chest') return 'chest';
@@ -788,7 +832,7 @@ function normalizeInjectedExercise(exercise, index = 0) {
     sets: clampNumber(Math.round(Number(exercise.sets) || 3), 2, 7),
   };
 }
-
+// Fetches exercises from the API based on the user's split, focus areas, fitness level, and equipment,
 async function fetchApiExercisePool({
   split,
   focusAreas,
@@ -903,6 +947,7 @@ export async function generateWorkoutPlan(userProfile, options = {}) {
   const split =
     SPLITS[goal]?.[weeklyDays] ??
     SPLITS.maintain_fitness[3];
+    console.log('Resolved split:', split);
 
   // ── 4. Resolve exercises per day ──
   const exPerDay = clampNumber(
@@ -932,12 +977,12 @@ export async function generateWorkoutPlan(userProfile, options = {}) {
     canPerformExercise(ex, normalizedEquipment)
   );
   if (!availableExercises.length) return null;
-
+console.log('Available exercises after safety and equipment filtering:', availableExercises.length);
   // ── 6. Seed for reproducible plan (changes monthly so plan rotates) ──
   const seedDate = options?.seedDate ? new Date(options.seedDate) : new Date();
   const now = Number.isNaN(seedDate.getTime()) ? new Date() : seedDate;
   const seed = now.getFullYear() * 100 + now.getMonth() + (goal.charCodeAt(0) || 0);
-
+console.log('Using seed:', seed);
   // ── 7. Build each training day ──
   // Prefer unseen exercises across the week before reusing any.
   const { blockedCategories } = buildLimitationSets(effectiveLimitations);
@@ -946,10 +991,10 @@ export async function generateWorkoutPlan(userProfile, options = {}) {
     const categories = getCategoriesForDay(dayType, focusAreas);
     const safeCategories = categories.filter((entry) => !blockedCategories.has(normalizeText(entry)));
     const categoriesToUse = safeCategories.length ? safeCategories : categories;
-
+console.log(`Day ${index + 1} categories:`, categoriesToUse);
     // Pull exercises that match the day's categories
     let pool = availableExercises.filter((ex) => categoriesToUse.includes(ex.category));
-
+console.log(`Day ${index + 1} pool after category filtering:`, pool.length);
     // Fallback: if no exercises match, use full pool
     if (pool.length < 3) pool = availableExercises;
 
@@ -984,7 +1029,7 @@ export async function generateWorkoutPlan(userProfile, options = {}) {
 
   // ── 8. Build the plan shell ──
   const planMeta = buildPlanMeta(goal, fitnessLevel, weeklyDays, focusAreas);
-
+console.log('Generated plan meta:', planMeta, 'Generated days:', days, 'Goal params:', goalParams);
   return {
     ...planMeta,
     weeklyDays,
@@ -1054,12 +1099,17 @@ function buildPlanMeta(goal, fitnessLevel, weeklyDays, focusAreas) {
     maintain_fitness:
       'https://images.unsplash.com/photo-1540497077202-7c8a3999166f?w=800',
   };
-
+const metaResponse = {
+  name:        PLAN_NAMES[goal]        ?? 'My Custom Plan',
+  description: PLAN_DESCRIPTIONS[goal] ?? 'Your personalised training plan.',
+  image:       PLAN_IMAGES[goal]       ?? PLAN_IMAGES.maintain_fitness,
+  category:    goal.replace(/_/g, ' '),
+};
+console.log('Generated plan meta:', metaResponse);
   return {
-    name:        PLAN_NAMES[goal]        ?? 'My Custom Plan',
-    description: PLAN_DESCRIPTIONS[goal] ?? 'Your personalised training plan.',
-    image:       PLAN_IMAGES[goal]       ?? PLAN_IMAGES.maintain_fitness,
-    category:    goal.replace(/_/g, ' '),
+    ...metaResponse,
+    fitnessLevel: fitnessLevel,
+    focusAreas: focusAreas,
   };
 }
 
@@ -1119,6 +1169,7 @@ function scoreTemplateExercise(exercise, context, dayIndex, dayMeta = null) {
     categoryLabel,
     listLabel,
     workoutLocation,
+    seedOffset,
   } = context;
 
   const dayTargets = dayMeta
@@ -1171,7 +1222,8 @@ function scoreTemplateExercise(exercise, context, dayIndex, dayMeta = null) {
     if (exerciseEquipment.some((item) => ['machine', 'smith machine'].includes(item))) score -= 14;
   }
 
-  score += (hashString(`${exercise?.id || exercise?.name}-${dayIndex}-${categoryLabel}-${listLabel}`) % 1000) / 1000;
+  const safeSeedOffset = Number.isFinite(Number(seedOffset)) ? Number(seedOffset) : 0;
+  score += (hashString(`${exercise?.id || exercise?.name}-${dayIndex}-${categoryLabel}-${listLabel}-${safeSeedOffset}`) % 1000) / 1000;
   return score;
 }
 
@@ -1186,6 +1238,7 @@ export async function generateProgramDaysFromTemplate({
   listLabel = '',
   adaptation = {},
   exercisePool = null,
+  seedOffset = 0,
 }) {
   const safeProgramDays = Array.isArray(programDays) ? programDays : [];
   if (!safeProgramDays.length) return { days: [], meta: { source: 'template-empty' } };
@@ -1241,6 +1294,7 @@ export async function generateProgramDaysFromTemplate({
     categoryLabel,
     listLabel,
     workoutLocation: normalizeKey(userProfile?.workoutLocation || userProfile?.trainArea),
+    seedOffset,
   };
 
   const usedExerciseIds = new Set();
@@ -1344,7 +1398,7 @@ export async function generateProgramDaysFromTemplate({
  */
 export function buildWeeklySchedule(plan) {
   if (!plan) return [];
-
+console.log('Building weekly schedule for plan:', plan.weeklyDays, plan.days);
   const WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const { days, weeklyDays } = plan;
 
@@ -1354,7 +1408,7 @@ export function buildWeeklySchedule(plan) {
   return WEEK.map((label, i) => {
     const trainIdx = trainingIndices.indexOf(i);
     const isTraining = trainIdx !== -1;
-
+console.log(`Day ${label}: isTraining=${isTraining}, trainIdx=${trainIdx}`);
     return {
       day:     label,
       isRest:  !isTraining,

@@ -18,6 +18,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import axios from 'axios';
 import API_BASE_URL from '../constants/api';
+import { readCache, writeCache, isCacheFresh } from '../utils/localCache';
+import { mapWorkoutSession } from '../utils/recordsMapper';
+import { RECORDS_CACHE_KEY_PREFIX, RECORDS_CACHE_TTL_MS } from '../constants/cache';
 
 const ACCENTS = ['#FF4D2E', '#00E5BE', '#6C63FF', '#FFB800', '#FF4D8C', '#00C2FF'];
 
@@ -25,6 +28,17 @@ const VIEW_MODES = [
     { key: 'timeline', label: 'Timeline', icon: 'timeline-outline' },
     { key: 'monthly', label: 'Monthly', icon: 'calendar-month-outline' },
     { key: 'heatmap', label: 'Heatmap', icon: 'calendar-blank' },
+];
+
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const INSIGHT_MILESTONES = [
+    { id: 'first-workout', label: 'First Step', metric: 'workouts', target: 1, icon: 'dumbbell', color: '#00E5BE' },
+    { id: 'workout-10', label: '10 Workouts', metric: 'workouts', target: 10, icon: 'dumbbell', color: '#FFB800' },
+    { id: 'calories-1k', label: '1K Calories', metric: 'calories', target: 1000, icon: 'fire', color: '#FF4D2E' },
+    { id: 'minutes-300', label: '5 Hours', metric: 'minutes', target: 300, icon: 'clock-outline', color: '#6C63FF' },
+    { id: 'days-20', label: '20 Active Days', metric: 'activeDays', target: 20, icon: 'calendar-check', color: '#00C2FF' },
+    { id: 'streak-7', label: '7 Day Streak', metric: 'streak', target: 7, icon: 'lightning-bolt', color: '#FF4D8C' },
 ];
 
 const toNumber = (value, fallback = 0) => {
@@ -86,6 +100,16 @@ const formatMonthLabel = (monthKey) => {
     });
 };
 
+const formatShortDate = (value) => {
+    const date = toDateObj(value);
+    if (!date) return '';
+
+    return date.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+    });
+};
+
 const formatDuration = (totalSeconds) => {
     const safeSeconds = Math.max(0, Math.round(toNumber(totalSeconds, 0)));
     const minutes = Math.round(safeSeconds / 60);
@@ -97,6 +121,18 @@ const formatDuration = (totalSeconds) => {
     return mins ? `${hours}h ${mins}m` : `${hours}h`;
 };
 
+const formatDelta = (current, previous) => {
+    if (previous === 0) return current > 0 ? 'New' : '0%';
+    const pct = Math.round(((current - previous) / previous) * 100);
+    return `${pct > 0 ? '+' : ''}${pct}%`;
+};
+
+const getDeltaTone = (current, previous) => {
+    if (current > previous) return 'up';
+    if (current < previous) return 'down';
+    return 'flat';
+};
+
 const getWeekStartKey = (dateKey) => {
     const date = fromDateKey(dateKey);
     if (!date) return '';
@@ -104,6 +140,43 @@ const getWeekStartKey = (dateKey) => {
     const dayIndex = (date.getDay() + 6) % 7; // Monday-based
     date.setDate(date.getDate() - dayIndex);
     return toDateKey(date);
+};
+
+const getWeekStartDate = (value) => {
+    const date = toDateObj(value);
+    if (!date) return null;
+
+    date.setHours(0, 0, 0, 0);
+    const dayIndex = (date.getDay() + 6) % 7;
+    date.setDate(date.getDate() - dayIndex);
+    return date;
+};
+
+const isInRange = (value, start, end) => {
+    const date = toDateObj(value);
+    if (!date || !start || !end) return false;
+    return date >= start && date < end;
+};
+
+const calculateCurrentStreak = (dateKeys) => {
+    if (!Array.isArray(dateKeys) || dateKeys.length === 0) return 0;
+
+    const keySet = new Set(dateKeys);
+    const cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+
+    if (!keySet.has(toDateKey(cursor))) {
+        cursor.setDate(cursor.getDate() - 1);
+        if (!keySet.has(toDateKey(cursor))) return 0;
+    }
+
+    let streak = 0;
+    while (streak < 366 && keySet.has(toDateKey(cursor))) {
+        streak += 1;
+        cursor.setDate(cursor.getDate() - 1);
+    }
+
+    return streak;
 };
 
 const getHeatColor = (count, maxCount) => {
@@ -114,69 +187,6 @@ const getHeatColor = (count, maxCount) => {
     if (intensity > 0.5) return '#FF6E55';
     if (intensity > 0.25) return 'rgba(255,77,46,0.52)';
     return 'rgba(255,77,46,0.28)';
-};
-
-const normalizeWorkoutData = (raw) => {
-    if (!raw) return { exercises: [], summary: {} };
-
-    if (typeof raw === 'string') {
-        try {
-            const parsed = JSON.parse(raw);
-            return parsed && typeof parsed === 'object' ? parsed : { exercises: [], summary: {} };
-        } catch {
-            return { exercises: [], summary: {} };
-        }
-    }
-
-    return raw && typeof raw === 'object' ? raw : { exercises: [], summary: {} };
-};
-
-const mapWorkoutSession = (item, index) => {
-    const workoutData = normalizeWorkoutData(item?.workoutData);
-
-    const exercises = Array.isArray(workoutData?.exercises)
-        ? workoutData.exercises
-              .map((exercise, exerciseIndex) => {
-                  const name = String(exercise?.name || '').trim();
-                  if (!name) return null;
-
-                  return {
-                      id: String(exercise?.id || `${item?.id || 'session'}-exercise-${exerciseIndex}`),
-                      name,
-                      target: exercise?.target || null,
-                      sets: exercise?.sets != null ? toNumber(exercise.sets, 0) : null,
-                      durationSeconds: exercise?.durationSeconds != null ? toNumber(exercise.durationSeconds, 0) : null,
-                      caloriesBurned: exercise?.caloriesBurned != null ? toNumber(exercise.caloriesBurned, 0) : 0,
-                  };
-              })
-              .filter(Boolean)
-        : [];
-
-    const summary = workoutData?.summary || {};
-    const totalExercises = toNumber(item?.totalExercises, toNumber(summary?.totalExercises, exercises.length));
-    const totalCaloriesBurned = toNumber(
-        item?.totalCaloriesBurned,
-        toNumber(summary?.totalCaloriesBurned, exercises.reduce((sum, ex) => sum + toNumber(ex.caloriesBurned, 0), 0))
-    );
-    const totalDurationSeconds = toNumber(
-        item?.totalDurationSeconds,
-        toNumber(summary?.totalDurationSeconds, exercises.reduce((sum, ex) => sum + toNumber(ex.durationSeconds, 0), 0))
-    );
-
-    const createdAt = item?.createdAt || new Date().toISOString();
-
-    return {
-        id: String(item?.id || `${createdAt}-${index}`),
-        createdAt,
-        dateKey: toDateKey(createdAt),
-        displayDate: formatDateTime(createdAt),
-        summary: {
-            totalExercises,
-            totalCaloriesBurned,
-            totalDurationSeconds,
-        },
-        exercises,
-    };
 };
 
 const getSessionTotals = (sessions) =>
@@ -336,6 +346,7 @@ export default function Records() {
 
     const headerFadeAnim = useRef(new Animated.Value(0)).current;
     const headerYAnim = useRef(new Animated.Value(-16)).current;
+    const recordsCacheKey = user?.id ? `${RECORDS_CACHE_KEY_PREFIX}${user.id}` : null;
 
     useEffect(() => {
         Animated.parallel([
@@ -344,7 +355,22 @@ export default function Records() {
         ]).start();
     }, []);
 
-    const fetchRecords = useCallback(async () => {
+    useEffect(() => {
+        let isMounted = true;
+        const hydrate = async () => {
+            if (!recordsCacheKey) return;
+            const cached = await readCache(recordsCacheKey);
+            if (isMounted && Array.isArray(cached?.data)) {
+                setRecords(cached.data);
+            }
+        };
+        hydrate();
+        return () => {
+            isMounted = false;
+        };
+    }, [recordsCacheKey]);
+
+    const fetchRecords = useCallback(async ({ force = false } = {}) => {
         if (!isUserLoaded) return;
 
         if (!user?.id) {
@@ -352,6 +378,17 @@ export default function Records() {
             setRecordsError('');
             setLoadingRecords(false);
             return;
+        }
+
+        let cached = null;
+        if (!force && recordsCacheKey) {
+            cached = await readCache(recordsCacheKey);
+            if (isCacheFresh(cached, RECORDS_CACHE_TTL_MS) && Array.isArray(cached?.data)) {
+                setRecords(cached.data);
+                setRecordsError('');
+                setLoadingRecords(false);
+                return;
+            }
         }
 
         setLoadingRecords(true);
@@ -365,14 +402,21 @@ export default function Records() {
             const payload = Array.isArray(response.data) ? response.data : [];
             const mapped = payload.map(mapWorkoutSession).filter(Boolean);
             setRecords(mapped);
+            if (recordsCacheKey) {
+                await writeCache(recordsCacheKey, mapped);
+            }
         } catch (error) {
             console.error('Failed to load workout records:', error);
-            setRecords([]);
+            if (Array.isArray(cached?.data)) {
+                setRecords(cached.data);
+            } else {
+                setRecords([]);
+            }
             setRecordsError(buildRecordsErrorMessage(error));
         } finally {
             setLoadingRecords(false);
         }
-    }, [isUserLoaded, user?.id]);
+    }, [isUserLoaded, recordsCacheKey, user?.id]);
 
     useFocusEffect(
         useCallback(() => {
@@ -518,6 +562,253 @@ export default function Records() {
             }));
     }, [sortedDateKeys, sessionsByDate]);
 
+    const weeklySnapshot = useMemo(() => {
+        const thisWeekStart = getWeekStartDate(new Date());
+        if (!thisWeekStart) {
+            return {
+                rangeLabel: '',
+                activeDays: 0,
+                metrics: [],
+                daily: WEEKDAY_LABELS.map((day) => ({ day, sessionCount: 0 })),
+                maxDailySessions: 0,
+            };
+        }
+
+        const thisWeekEnd = new Date(thisWeekStart);
+        thisWeekEnd.setDate(thisWeekEnd.getDate() + 7);
+        const lastWeekStart = new Date(thisWeekStart);
+        lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+
+        const thisWeekSessions = allRecords.filter((session) => isInRange(session?.createdAt, thisWeekStart, thisWeekEnd));
+        const lastWeekSessions = allRecords.filter((session) => isInRange(session?.createdAt, lastWeekStart, thisWeekStart));
+
+        const thisWeekTotals = getSessionTotals(thisWeekSessions);
+        const lastWeekTotals = getSessionTotals(lastWeekSessions);
+
+        const thisWeekMinutes = Math.round(thisWeekTotals.totalDurationSeconds / 60);
+        const lastWeekMinutes = Math.round(lastWeekTotals.totalDurationSeconds / 60);
+        const thisWeekCalories = Math.round(thisWeekTotals.totalCaloriesBurned);
+        const lastWeekCalories = Math.round(lastWeekTotals.totalCaloriesBurned);
+
+        const daily = WEEKDAY_LABELS.map((day, index) => {
+            const date = new Date(thisWeekStart);
+            date.setDate(thisWeekStart.getDate() + index);
+            const dayKey = toDateKey(date);
+            const daySessions = sessionsByDate[dayKey] || [];
+            return {
+                day,
+                dayKey,
+                sessionCount: daySessions.length,
+            };
+        });
+
+        const activeDays = daily.filter((item) => item.sessionCount > 0).length;
+        const maxDailySessions = daily.reduce((max, item) => Math.max(max, item.sessionCount), 0);
+
+        return {
+            rangeLabel: `${formatShortDate(thisWeekStart)} - ${formatShortDate(new Date(thisWeekEnd.getTime() - 1))}`,
+            activeDays,
+            metrics: [
+                {
+                    id: 'workouts',
+                    label: 'Workouts',
+                    icon: 'lightning-bolt',
+                    color: '#FF4D2E',
+                    value: thisWeekTotals.sessionCount,
+                    previousValue: lastWeekTotals.sessionCount,
+                },
+                {
+                    id: 'minutes',
+                    label: 'Minutes',
+                    icon: 'clock-outline',
+                    color: '#00E5BE',
+                    value: thisWeekMinutes,
+                    previousValue: lastWeekMinutes,
+                },
+                {
+                    id: 'calories',
+                    label: 'Calories',
+                    icon: 'fire',
+                    color: '#6C63FF',
+                    value: thisWeekCalories,
+                    previousValue: lastWeekCalories,
+                },
+            ],
+            daily,
+            maxDailySessions,
+        };
+    }, [allRecords, sessionsByDate]);
+
+    const monthlyRollup = useMemo(() => {
+        const thisWeekStart = getWeekStartDate(new Date());
+        if (!thisWeekStart) {
+            return {
+                totals: { workouts: 0, minutes: 0, calories: 0, consistencyPct: 0 },
+                weeks: [],
+                bestWeek: null,
+                weekTrend: 0,
+            };
+        }
+
+        const weeks = [];
+
+        for (let offset = 3; offset >= 0; offset -= 1) {
+            const weekStart = new Date(thisWeekStart);
+            weekStart.setDate(weekStart.getDate() - offset * 7);
+            const weekEnd = new Date(weekStart);
+            weekEnd.setDate(weekEnd.getDate() + 7);
+
+            const weekSessions = allRecords.filter((session) => isInRange(session?.createdAt, weekStart, weekEnd));
+            const totals = getSessionTotals(weekSessions);
+
+            weeks.push({
+                key: `W${4 - offset}`,
+                rangeLabel: `${formatShortDate(weekStart)} - ${formatShortDate(new Date(weekEnd.getTime() - 1))}`,
+                workouts: totals.sessionCount,
+                calories: Math.round(totals.totalCaloriesBurned),
+                minutes: Math.round(totals.totalDurationSeconds / 60),
+            });
+        }
+
+        const totals = weeks.reduce(
+            (acc, week) => {
+                acc.workouts += week.workouts;
+                acc.minutes += week.minutes;
+                acc.calories += week.calories;
+                return acc;
+            },
+            { workouts: 0, minutes: 0, calories: 0 }
+        );
+
+        const fourWeekStart = new Date(thisWeekStart);
+        fourWeekStart.setDate(fourWeekStart.getDate() - 21);
+        const nextWeekEnd = new Date(thisWeekStart);
+        nextWeekEnd.setDate(nextWeekEnd.getDate() + 7);
+
+        const uniqueDays = new Set(
+            allRecords
+                .filter((session) => isInRange(session?.createdAt, fourWeekStart, nextWeekEnd))
+                .map((session) => session.dateKey)
+                .filter(Boolean)
+        );
+
+        const bestWeek = weeks.reduce((best, week) => {
+            if (!best) return week;
+            if (week.workouts > best.workouts) return week;
+            if (week.workouts === best.workouts && week.calories > best.calories) return week;
+            return best;
+        }, null);
+
+        return {
+            totals: {
+                ...totals,
+                consistencyPct: Math.min(100, Math.round((uniqueDays.size / 28) * 100)),
+            },
+            weeks,
+            bestWeek,
+            weekTrend: weeks.length > 1 ? weeks[weeks.length - 1].workouts - weeks[weeks.length - 2].workouts : 0,
+        };
+    }, [allRecords]);
+
+    const achievementSummary = useMemo(() => {
+        const totals = getSessionTotals(allRecords);
+        const totalMinutesValue = Math.round(totals.totalDurationSeconds / 60);
+        const totalCaloriesValue = Math.round(totals.totalCaloriesBurned);
+        const activeDaysValue = sortedDateKeys.length;
+        const streakValue = calculateCurrentStreak(sortedDateKeys);
+
+        const metricValues = {
+            workouts: allRecords.length,
+            calories: totalCaloriesValue,
+            minutes: totalMinutesValue,
+            activeDays: activeDaysValue,
+            streak: streakValue,
+        };
+
+        const badges = INSIGHT_MILESTONES.map((milestone) => {
+            const raw = toNumber(metricValues[milestone.metric], 0);
+            return {
+                ...milestone,
+                earned: raw >= milestone.target,
+                progress: Math.min(100, Math.round((raw / milestone.target) * 100)),
+                current: Math.min(raw, milestone.target),
+                total: raw,
+            };
+        }).sort((a, b) => {
+            if (a.earned && !b.earned) return -1;
+            if (!a.earned && b.earned) return 1;
+            if (a.earned && b.earned) return b.target - a.target;
+            return b.progress - a.progress;
+        });
+
+        return {
+            streak: streakValue,
+            earnedCount: badges.filter((badge) => badge.earned).length,
+            badges,
+        };
+    }, [allRecords, sortedDateKeys]);
+
+    const personalHighlights = useMemo(() => {
+        if (!allRecords.length) return [];
+
+        const bestCaloriesSession = allRecords.reduce((best, session) =>
+            toNumber(session?.summary?.totalCaloriesBurned, 0) > toNumber(best?.summary?.totalCaloriesBurned, 0) ? session : best
+        );
+        const longestSession = allRecords.reduce((best, session) =>
+            toNumber(session?.summary?.totalDurationSeconds, 0) > toNumber(best?.summary?.totalDurationSeconds, 0) ? session : best
+        );
+        const highestExerciseSession = allRecords.reduce((best, session) =>
+            toNumber(session?.summary?.totalExercises, 0) > toNumber(best?.summary?.totalExercises, 0) ? session : best
+        );
+
+        const exerciseFrequency = {};
+        allRecords.forEach((session) => {
+            session.exercises.forEach((exercise) => {
+                const key = String(exercise?.name || '').trim();
+                if (!key) return;
+                exerciseFrequency[key] = (exerciseFrequency[key] || 0) + 1;
+            });
+        });
+
+        const mostFrequentExercise = Object.entries(exerciseFrequency).sort((a, b) => b[1] - a[1])[0];
+
+        const highlights = [
+            {
+                id: 'calories-pr',
+                icon: 'fire',
+                label: 'Calorie Burn PR',
+                value: `${Math.round(toNumber(bestCaloriesSession?.summary?.totalCaloriesBurned, 0))} kcal`,
+                meta: bestCaloriesSession ? formatDateTime(bestCaloriesSession.createdAt) : 'No sessions yet',
+            },
+            {
+                id: 'duration-pr',
+                icon: 'clock-outline',
+                label: 'Longest Session',
+                value: formatDuration(toNumber(longestSession?.summary?.totalDurationSeconds, 0)),
+                meta: longestSession ? formatDateTime(longestSession.createdAt) : 'No sessions yet',
+            },
+            {
+                id: 'volume-pr',
+                icon: 'dumbbell',
+                label: 'Most Exercises',
+                value: `${toNumber(highestExerciseSession?.summary?.totalExercises, 0)} in one session`,
+                meta: highestExerciseSession ? formatDateTime(highestExerciseSession.createdAt) : 'No sessions yet',
+            },
+        ];
+
+        if (mostFrequentExercise) {
+            highlights.push({
+                id: 'favorite-move',
+                icon: 'star-circle-outline',
+                label: 'Most Logged Exercise',
+                value: `${mostFrequentExercise[0]} x${mostFrequentExercise[1]}`,
+                meta: 'Across all recorded sessions',
+            });
+        }
+
+        return highlights;
+    }, [allRecords]);
+
     const maxHeatCount = useMemo(
         () => sortedDateKeys.reduce((max, dateKey) => Math.max(max, (sessionsByDate[dateKey] || []).length), 0),
         [sortedDateKeys, sessionsByDate]
@@ -626,6 +917,221 @@ export default function Records() {
                     <View style={styles.errorBanner}>
                         <Feather name="alert-triangle" size={13} color="#FF4D2E" />
                         <Text style={styles.errorBannerText}>{recordsError}</Text>
+                    </View>
+                ) : null}
+
+                {!loadingRecords && !showEmpty ? (
+                    <View style={styles.insightsWrap}>
+                        <View style={styles.insightCard}>
+                            <View style={styles.insightHeaderRow}>
+                                <View>
+                                    <Text style={styles.insightTitle}>Weekly Snapshot</Text>
+                                    <Text style={styles.insightSubtitle}>{weeklySnapshot.rangeLabel}</Text>
+                                </View>
+                                <View style={styles.weeklyActiveBadge}>
+                                    <MaterialCommunityIcons name="calendar-check" size={12} color="#00E5BE" />
+                                    <Text style={styles.weeklyActiveBadgeText}>
+                                        {weeklySnapshot.activeDays} active day{weeklySnapshot.activeDays === 1 ? '' : 's'}
+                                    </Text>
+                                </View>
+                            </View>
+
+                            <View style={styles.weeklyMetricRow}>
+                                {weeklySnapshot.metrics.map((metric) => {
+                                    const tone = getDeltaTone(metric.value, metric.previousValue);
+                                    const deltaLabel = formatDelta(metric.value, metric.previousValue);
+                                    return (
+                                        <View key={metric.id} style={styles.weeklyMetricCard}>
+                                            <View style={[styles.weeklyMetricIconWrap, { backgroundColor: metric.color + '18' }]}>
+                                                <MaterialCommunityIcons name={metric.icon} size={14} color={metric.color} />
+                                            </View>
+                                            <Text style={[styles.weeklyMetricValue, { color: metric.color }]}>{metric.value}</Text>
+                                            <Text style={styles.weeklyMetricLabel}>{metric.label}</Text>
+                                            <View
+                                                style={[
+                                                    styles.weeklyDeltaBadge,
+                                                    tone === 'up'
+                                                        ? styles.weeklyDeltaUp
+                                                        : tone === 'down'
+                                                          ? styles.weeklyDeltaDown
+                                                          : styles.weeklyDeltaFlat,
+                                                ]}
+                                            >
+                                                <Text
+                                                    style={[
+                                                        styles.weeklyDeltaText,
+                                                        tone === 'up'
+                                                            ? styles.weeklyDeltaTextUp
+                                                            : tone === 'down'
+                                                              ? styles.weeklyDeltaTextDown
+                                                              : styles.weeklyDeltaTextFlat,
+                                                    ]}
+                                                >
+                                                    {deltaLabel}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    );
+                                })}
+                            </View>
+
+                            <View style={styles.weeklyBarsRow}>
+                                {weeklySnapshot.daily.map((day) => {
+                                    const barHeight = weeklySnapshot.maxDailySessions
+                                        ? Math.max(4, Math.round((day.sessionCount / weeklySnapshot.maxDailySessions) * 36))
+                                        : 4;
+                                    return (
+                                        <View key={day.day} style={styles.weeklyBarItem}>
+                                            <View style={styles.weeklyBarTrack}>
+                                                <View style={[styles.weeklyBarFill, { height: barHeight }]} />
+                                            </View>
+                                            <Text style={styles.weeklyBarValue}>{day.sessionCount}</Text>
+                                            <Text style={styles.weeklyBarLabel}>{day.day}</Text>
+                                        </View>
+                                    );
+                                })}
+                            </View>
+                        </View>
+
+                        <View style={styles.insightCard}>
+                            <View style={styles.insightHeaderRow}>
+                                <View>
+                                    <Text style={styles.insightTitle}>Monthly Rollup</Text>
+                                    <Text style={styles.insightSubtitle}>Last 4 weeks</Text>
+                                </View>
+                                <View style={styles.monthlyTrendChip}>
+                                    <Feather
+                                        name={
+                                            monthlyRollup.weekTrend > 0
+                                                ? 'trending-up'
+                                                : monthlyRollup.weekTrend < 0
+                                                  ? 'trending-down'
+                                                  : 'minus'
+                                        }
+                                        size={12}
+                                        color={
+                                            monthlyRollup.weekTrend > 0
+                                                ? '#2DD4BF'
+                                                : monthlyRollup.weekTrend < 0
+                                                  ? '#F87171'
+                                                  : '#8A8AA2'
+                                        }
+                                    />
+                                    <Text
+                                        style={[
+                                            styles.monthlyTrendText,
+                                            monthlyRollup.weekTrend > 0
+                                                ? styles.monthlyTrendTextUp
+                                                : monthlyRollup.weekTrend < 0
+                                                  ? styles.monthlyTrendTextDown
+                                                  : styles.monthlyTrendTextFlat,
+                                        ]}
+                                    >
+                                        {monthlyRollup.weekTrend > 0 ? '+' : ''}
+                                        {monthlyRollup.weekTrend} vs last week
+                                    </Text>
+                                </View>
+                            </View>
+
+                            <View style={styles.monthlyTotalsRow}>
+                                <View style={styles.monthlyTotalCard}>
+                                    <Text style={styles.monthlyTotalValue}>{monthlyRollup.totals.workouts}</Text>
+                                    <Text style={styles.monthlyTotalLabel}>Workouts</Text>
+                                </View>
+                                <View style={styles.monthlyTotalCard}>
+                                    <Text style={styles.monthlyTotalValue}>{monthlyRollup.totals.minutes}m</Text>
+                                    <Text style={styles.monthlyTotalLabel}>Minutes</Text>
+                                </View>
+                                <View style={styles.monthlyTotalCard}>
+                                    <Text style={styles.monthlyTotalValue}>{monthlyRollup.totals.calories}</Text>
+                                    <Text style={styles.monthlyTotalLabel}>Calories</Text>
+                                </View>
+                                <View style={styles.monthlyTotalCard}>
+                                    <Text style={styles.monthlyTotalValue}>{monthlyRollup.totals.consistencyPct}%</Text>
+                                    <Text style={styles.monthlyTotalLabel}>Consistency</Text>
+                                </View>
+                            </View>
+
+                            <View style={styles.monthlyWeeksRow}>
+                                {monthlyRollup.weeks.map((week) => {
+                                    const isBestWeek = monthlyRollup.bestWeek?.key === week.key && week.workouts > 0;
+                                    return (
+                                        <View key={week.key} style={[styles.monthlyWeekPill, isBestWeek && styles.monthlyWeekPillBest]}>
+                                            <Text style={[styles.monthlyWeekKey, isBestWeek && styles.monthlyWeekKeyBest]}>{week.key}</Text>
+                                            <Text style={[styles.monthlyWeekWorkouts, isBestWeek && styles.monthlyWeekWorkoutsBest]}>
+                                                {week.workouts} wk
+                                            </Text>
+                                            <Text style={styles.monthlyWeekRange}>{week.rangeLabel}</Text>
+                                        </View>
+                                    );
+                                })}
+                            </View>
+                        </View>
+
+                        <View style={styles.insightCard}>
+                            <View style={styles.insightHeaderRow}>
+                                <View>
+                                    <Text style={styles.insightTitle}>Milestones & Highlights</Text>
+                                    <Text style={styles.insightSubtitle}>
+                                        {achievementSummary.earnedCount}/{achievementSummary.badges.length} milestones unlocked
+                                    </Text>
+                                </View>
+                                {achievementSummary.streak > 0 ? (
+                                    <View style={styles.streakMiniChip}>
+                                        <MaterialCommunityIcons name="fire" size={12} color="#FFB800" />
+                                        <Text style={styles.streakMiniText}>{achievementSummary.streak}d streak</Text>
+                                    </View>
+                                ) : null}
+                            </View>
+
+                            <View style={styles.badgesGrid}>
+                                {achievementSummary.badges.slice(0, 6).map((badge) => (
+                                    <View
+                                        key={badge.id}
+                                        style={[styles.badgeItem, badge.earned ? styles.badgeItemEarned : styles.badgeItemLocked]}
+                                    >
+                                        <View style={[styles.badgeIconWrap, { backgroundColor: badge.earned ? badge.color + '22' : '#212129' }]}>
+                                            <MaterialCommunityIcons
+                                                name={badge.icon}
+                                                size={13}
+                                                color={badge.earned ? badge.color : '#6E6E86'}
+                                            />
+                                        </View>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={[styles.badgeName, !badge.earned && styles.badgeNameLocked]} numberOfLines={1}>
+                                                {badge.label}
+                                            </Text>
+                                            <Text style={styles.badgeProgressText}>
+                                                {badge.current}/{badge.target}
+                                            </Text>
+                                            <View style={styles.badgeProgressTrack}>
+                                                <View
+                                                    style={[
+                                                        styles.badgeProgressFill,
+                                                        { width: `${badge.progress}%`, backgroundColor: badge.earned ? badge.color : '#5A5A72' },
+                                                    ]}
+                                                />
+                                            </View>
+                                        </View>
+                                    </View>
+                                ))}
+                            </View>
+
+                            <View style={styles.prHighlightsList}>
+                                {personalHighlights.map((highlight) => (
+                                    <View key={highlight.id} style={styles.prHighlightItem}>
+                                        <View style={styles.prHighlightIconWrap}>
+                                            <MaterialCommunityIcons name={highlight.icon} size={13} color="#00E5BE" />
+                                        </View>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.prHighlightLabel}>{highlight.label}</Text>
+                                            <Text style={styles.prHighlightValue}>{highlight.value}</Text>
+                                            <Text style={styles.prHighlightMeta}>{highlight.meta}</Text>
+                                        </View>
+                                    </View>
+                                ))}
+                            </View>
+                        </View>
                     </View>
                 ) : null}
 
@@ -936,6 +1442,347 @@ const styles = StyleSheet.create({
         color: '#FF9A86',
         fontSize: 12,
         fontWeight: '500',
+    },
+
+    insightsWrap: {
+        marginTop: 16,
+        paddingHorizontal: 20,
+        gap: 10,
+    },
+    insightCard: {
+        backgroundColor: '#16161A',
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        padding: 12,
+        gap: 10,
+    },
+    insightHeaderRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 10,
+    },
+    insightTitle: {
+        color: '#F1F1FA',
+        fontSize: 14,
+        fontWeight: '800',
+    },
+    insightSubtitle: {
+        color: '#7A7A93',
+        fontSize: 10,
+        marginTop: 2,
+    },
+    weeklyActiveBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        backgroundColor: 'rgba(0,229,190,0.12)',
+        borderColor: 'rgba(0,229,190,0.25)',
+        borderWidth: 1,
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+    },
+    weeklyActiveBadgeText: {
+        color: '#00E5BE',
+        fontSize: 10,
+        fontWeight: '700',
+    },
+    weeklyMetricRow: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    weeklyMetricCard: {
+        flex: 1,
+        backgroundColor: '#111116',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.04)',
+        paddingVertical: 10,
+        paddingHorizontal: 8,
+        alignItems: 'center',
+        gap: 3,
+    },
+    weeklyMetricIconWrap: {
+        width: 28,
+        height: 28,
+        borderRadius: 9,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 1,
+    },
+    weeklyMetricValue: {
+        fontSize: 18,
+        fontWeight: '800',
+        letterSpacing: -0.3,
+    },
+    weeklyMetricLabel: {
+        color: '#8A8AA2',
+        fontSize: 10,
+        fontWeight: '600',
+    },
+    weeklyDeltaBadge: {
+        marginTop: 3,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 999,
+    },
+    weeklyDeltaUp: {
+        backgroundColor: 'rgba(45,212,191,0.12)',
+    },
+    weeklyDeltaDown: {
+        backgroundColor: 'rgba(248,113,113,0.12)',
+    },
+    weeklyDeltaFlat: {
+        backgroundColor: 'rgba(138,138,162,0.16)',
+    },
+    weeklyDeltaText: {
+        fontSize: 9,
+        fontWeight: '700',
+    },
+    weeklyDeltaTextUp: {
+        color: '#2DD4BF',
+    },
+    weeklyDeltaTextDown: {
+        color: '#F87171',
+    },
+    weeklyDeltaTextFlat: {
+        color: '#9A9AB2',
+    },
+    weeklyBarsRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        gap: 6,
+        paddingTop: 2,
+    },
+    weeklyBarItem: {
+        flex: 1,
+        alignItems: 'center',
+        gap: 4,
+    },
+    weeklyBarTrack: {
+        width: 16,
+        height: 40,
+        borderRadius: 8,
+        backgroundColor: '#101015',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        justifyContent: 'flex-end',
+        padding: 2,
+    },
+    weeklyBarFill: {
+        width: '100%',
+        borderRadius: 6,
+        backgroundColor: '#FF4D2E',
+    },
+    weeklyBarValue: {
+        color: '#C7C7D8',
+        fontSize: 9,
+        fontWeight: '700',
+    },
+    weeklyBarLabel: {
+        color: '#6F6F86',
+        fontSize: 9,
+        fontWeight: '600',
+    },
+    monthlyTrendChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        backgroundColor: '#111116',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+    },
+    monthlyTrendText: {
+        fontSize: 10,
+        fontWeight: '700',
+    },
+    monthlyTrendTextUp: {
+        color: '#2DD4BF',
+    },
+    monthlyTrendTextDown: {
+        color: '#F87171',
+    },
+    monthlyTrendTextFlat: {
+        color: '#8A8AA2',
+    },
+    monthlyTotalsRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    monthlyTotalCard: {
+        width: '48%',
+        backgroundColor: '#111116',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        paddingVertical: 10,
+        paddingHorizontal: 10,
+    },
+    monthlyTotalValue: {
+        color: '#F2F2FB',
+        fontSize: 16,
+        fontWeight: '800',
+        letterSpacing: -0.2,
+    },
+    monthlyTotalLabel: {
+        color: '#6F6F86',
+        fontSize: 10,
+        marginTop: 2,
+    },
+    monthlyWeeksRow: {
+        flexDirection: 'row',
+        gap: 6,
+    },
+    monthlyWeekPill: {
+        flex: 1,
+        backgroundColor: '#111116',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        paddingVertical: 7,
+        paddingHorizontal: 7,
+        alignItems: 'center',
+    },
+    monthlyWeekPillBest: {
+        borderColor: 'rgba(0,229,190,0.4)',
+        backgroundColor: 'rgba(0,229,190,0.08)',
+    },
+    monthlyWeekKey: {
+        color: '#B3B3C8',
+        fontSize: 10,
+        fontWeight: '700',
+    },
+    monthlyWeekKeyBest: {
+        color: '#00E5BE',
+    },
+    monthlyWeekWorkouts: {
+        color: '#E9E9F6',
+        fontSize: 11,
+        fontWeight: '800',
+        marginTop: 1,
+    },
+    monthlyWeekWorkoutsBest: {
+        color: '#B2FFF0',
+    },
+    monthlyWeekRange: {
+        color: '#6A6A84',
+        fontSize: 8,
+        marginTop: 1,
+    },
+    streakMiniChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: 'rgba(255,184,0,0.24)',
+        backgroundColor: 'rgba(255,184,0,0.1)',
+    },
+    streakMiniText: {
+        color: '#FFB800',
+        fontSize: 10,
+        fontWeight: '700',
+    },
+    badgesGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    badgeItem: {
+        width: '48%',
+        borderRadius: 12,
+        borderWidth: 1,
+        padding: 8,
+        flexDirection: 'row',
+        gap: 8,
+        alignItems: 'center',
+    },
+    badgeItemEarned: {
+        borderColor: 'rgba(0,229,190,0.2)',
+        backgroundColor: 'rgba(0,229,190,0.08)',
+    },
+    badgeItemLocked: {
+        borderColor: 'rgba(255,255,255,0.05)',
+        backgroundColor: '#111116',
+    },
+    badgeIconWrap: {
+        width: 26,
+        height: 26,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    badgeName: {
+        color: '#EDEDF8',
+        fontSize: 10,
+        fontWeight: '700',
+    },
+    badgeNameLocked: {
+        color: '#9B9BB3',
+    },
+    badgeProgressText: {
+        color: '#767690',
+        fontSize: 9,
+        marginTop: 1,
+    },
+    badgeProgressTrack: {
+        marginTop: 4,
+        height: 4,
+        width: '100%',
+        borderRadius: 4,
+        backgroundColor: '#212132',
+        overflow: 'hidden',
+    },
+    badgeProgressFill: {
+        height: '100%',
+        borderRadius: 4,
+    },
+    prHighlightsList: {
+        gap: 7,
+        marginTop: 2,
+    },
+    prHighlightItem: {
+        flexDirection: 'row',
+        gap: 8,
+        alignItems: 'center',
+        backgroundColor: '#111116',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        paddingVertical: 8,
+        paddingHorizontal: 8,
+    },
+    prHighlightIconWrap: {
+        width: 28,
+        height: 28,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,229,190,0.12)',
+    },
+    prHighlightLabel: {
+        color: '#9B9BB1',
+        fontSize: 10,
+        fontWeight: '600',
+    },
+    prHighlightValue: {
+        color: '#F2F2FA',
+        fontSize: 12,
+        fontWeight: '700',
+        marginTop: 1,
+    },
+    prHighlightMeta: {
+        color: '#676780',
+        fontSize: 9,
+        marginTop: 1,
     },
 
     modeSwitchWrap: {

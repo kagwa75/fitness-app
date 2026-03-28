@@ -18,6 +18,8 @@ import { FitnessItems } from '../Context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import axios from 'axios';
+import { isMatchingSession } from '../utils/sessionMatch';
+import { clearInProgressFromBackend } from '../utils/inProgressApi';
 import API_BASE_URL from '../constants/api';
 
 const { width, height } = Dimensions.get('window');
@@ -120,10 +122,8 @@ const WorkoutScreen = () => {
     const { user, isLoaded: isUserLoaded } = useUser();
     const {
         completed,
-        setCompleted,
         inProgressWorkout,
         saveInProgressWorkout,
-        clearInProgressWorkout,
     } = useContext(FitnessItems);
     const { exercises, image } = route.params;
 
@@ -155,6 +155,7 @@ const WorkoutScreen = () => {
             dayName: route.params.dayName,
             totalDays: route.params.totalDays,
             programKey: route.params.programKey,
+            programMode: route.params.programMode,
         }),
         [
             route.params.exercises,
@@ -162,6 +163,7 @@ const WorkoutScreen = () => {
             route.params.dayName,
             route.params.totalDays,
             route.params.programKey,
+            route.params.programMode,
         ]
     );
 
@@ -196,12 +198,9 @@ const WorkoutScreen = () => {
         }
     }, [inProgressWorkout, isUserLoaded, saveInProgressWorkout, user?.id]);
 
-    const clearInProgressFromBackend = useCallback(async () => {
-        if (!user?.id) return;
+    const clearInProgressRemote = useCallback(async () => {
         try {
-            await axios.delete(`${API_BASE_URL}/users/in-progress`, {
-                data: { clerkUserId: user.id },
-            });
+            await clearInProgressFromBackend(user?.id);
         } catch (error) {
             console.error('Failed to clear in-progress workout in backend:', error);
         }
@@ -212,33 +211,13 @@ const WorkoutScreen = () => {
             syncInProgressFromBackend();
         }, [syncInProgressFromBackend])
     );
+    
 
     const hasMatchingSavedSession = useMemo(() => {
         if (!inProgressWorkout) return false;
 
-        const savedOwner = String(inProgressWorkout.clerkUserId || '').trim();
-        const currentOwner = String(user?.id || '').trim();
-        if (savedOwner && savedOwner !== currentOwner) {
-            return false;
-        }
-
-        const routeDayIndex = Number.isInteger(route.params?.dayIndex) ? route.params.dayIndex : null;
-        const savedDayIndex = Number.isInteger(inProgressWorkout.dayIndex) ? inProgressWorkout.dayIndex : null;
-        if (routeDayIndex == null || savedDayIndex == null || routeDayIndex !== savedDayIndex) {
-            return false;
-        }
-
-        const routeProgramKey = String(route.params?.programKey || '').trim();
-        const savedProgramKey = String(inProgressWorkout.programKey || '').trim();
-        if (routeProgramKey && savedProgramKey && routeProgramKey !== savedProgramKey) {
-            return false;
-        }
-
-        const routeNames = (exercises || []).map(getExerciseName).filter(Boolean);
-        const savedNames = (inProgressWorkout.exercises || []).map(getExerciseName).filter(Boolean);
-        if (!routeNames.length || routeNames.length !== savedNames.length) return false;
-        return routeNames.every((name, index) => name === savedNames[index]);
-    }, [exercises, inProgressWorkout, route.params?.dayIndex, route.params?.programKey, user?.id]);
+        return isMatchingSession({ currentUserId: user?.id, routeParams: route.params, saved: inProgressWorkout, exercises, getExerciseName });
+    }, [exercises, inProgressWorkout, route.params?.dayIndex,route.params?.programMode, route.params?.programKey, user?.id]);
 
     const savedCompletedNameSet = useMemo(
         () =>
@@ -259,11 +238,9 @@ const WorkoutScreen = () => {
 
     const startFreshWorkout = async ({ clearRemote = false } = {}) => {
         if (clearRemote) {
-            await clearInProgressFromBackend();
+            await clearInProgressRemote();
         }
-        clearInProgressWorkout();
-        setCompleted([]);
-        navigation.navigate('Fit', fitParams);
+        navigation.navigate('Fit', { ...fitParams, resetProgress: clearRemote });
     };
 
     const resumeSavedWorkout = () => {
@@ -272,14 +249,10 @@ const WorkoutScreen = () => {
             return;
         }
 
-        const restoredCompleted = Array.isArray(inProgressWorkout.completedExercises)
-            ? inProgressWorkout.completedExercises
-            : [];
-
-        setCompleted(restoredCompleted);
         navigation.navigate('Fit', {
             ...fitParams,
             resumeSession: inProgressWorkout,
+            resetProgress: false,
         });
     };
 

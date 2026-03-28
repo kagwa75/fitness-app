@@ -18,6 +18,9 @@ import { FitnessItems } from '../Context';
 import { LinearGradient } from 'expo-linear-gradient';
 import axios from 'axios';
 import API_BASE_URL from '../constants/api';
+import { buildInProgressPayload } from '../utils/inProgress';
+import { clearInProgressFromBackend, saveInProgressToBackend } from '../utils/inProgressApi';
+import { enqueueWorkout } from '../utils/offlineQueue';
 
 const { width, height } = Dimensions.get('window');
 const REST_BETWEEN_EXERCISES_SECONDS = 15;
@@ -50,6 +53,13 @@ const computeRollingAverage = (previousValue, previousCount, nextValue) => {
     const hasPrevious = Number.isFinite(previousValue);
     if (safeCount <= 0 || !hasPrevious) return nextValue;
     return ((previousValue * safeCount) + nextValue) / (safeCount + 1);
+};
+
+const formatElapsed = (totalSeconds) => {
+    const safeSeconds = Number.isFinite(totalSeconds) ? Math.max(0, Math.round(totalSeconds)) : 0;
+    const minutes = Math.floor(safeSeconds / 60);
+    const seconds = safeSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
 };
 
 // Animated progress dots
@@ -85,7 +95,9 @@ const FitScreen = () => {
         dayName,
         totalDays,
         programKey,
+        programMode,
         resumeSession,
+        resetProgress,
     } = route.params || {};
     const initialIndex = (() => {
         const savedIndex = Number.isInteger(resumeSession?.currentIndex)
@@ -107,6 +119,7 @@ const FitScreen = () => {
         setMinutes,
         setWorkout,
         markDayCompleted,
+        recordProgramSession,
         saveProgramAdaptation,
         getProgramAdaptation,
         saveInProgressWorkout,
@@ -122,6 +135,10 @@ const FitScreen = () => {
         const savedTimeLeft = toNumber(resumeSession?.currentTimeLeft, -1);
         if (savedTimeLeft > 0) return savedTimeLeft;
         return toNumber(initialExercise.duration, 0);
+    });
+    const [elapsedSeconds, setElapsedSeconds] = useState(() => {
+        const savedElapsed = toNumber(resumeSession?.elapsedSeconds, 0);
+        return Math.max(0, Math.round(savedElapsed));
     });
 
     const gifOpacity = useRef(new Animated.Value(0)).current;
@@ -149,12 +166,26 @@ const FitScreen = () => {
     useEffect(() => { animateIn(); }, [index]);
 
     useEffect(() => {
+        const timer = setInterval(() => {
+            setElapsedSeconds((prev) => prev + 1);
+        }, 1000);
+        return () => clearInterval(timer);
+    }, []);
+
+    useEffect(() => {
         if (hydratedResumeRef.current) return;
         hydratedResumeRef.current = true;
 
+        if (resetProgress) {
+            setCompleted([]);
+            clearInProgressWorkout();
+            clearInProgressFromBackend(user?.id);
+            return;
+        }
+
         if (!resumeSession) return;
         setCompleted(normalizeCompletedExercises(resumeSession.completedExercises));
-    }, [resumeSession, setCompleted]);
+    }, [clearInProgressFromBackend, clearInProgressWorkout, resetProgress, resumeSession, setCompleted]);
 
     const mapExerciseForStorage = (exercise) => {
         const durationSeconds = exercise?.type === 'time' ? toNumber(exercise.duration, 0) : null;
@@ -422,33 +453,13 @@ const FitScreen = () => {
         });
     };
 
-    const saveInProgressToBackend = async (payload) => {
-        if (!user?.id) return;
 
-        try {
-            await axios.post(`${API_BASE_URL}/users/in-progress`, {
-                clerkUserId: user.id,
-                workout: payload,
-            });
-        } catch (error) {
-            console.error('Failed to save in-progress workout to backend:', error);
+    const saveWorkoutObject = async (allExercises, durationOverrideSeconds) => {
+        const { workoutExercises, summary: baseSummary } = buildWorkoutPayload(allExercises);
+        const summary = { ...baseSummary };
+        if (Number.isFinite(durationOverrideSeconds)) {
+            summary.totalDurationSeconds = Math.max(0, Math.round(durationOverrideSeconds));
         }
-    };
-
-    const clearInProgressFromBackend = async () => {
-        if (!user?.id) return;
-
-        try {
-            await axios.delete(`${API_BASE_URL}/users/in-progress`, {
-                data: { clerkUserId: user.id },
-            });
-        } catch (error) {
-            console.error('Failed to clear in-progress workout from backend:', error);
-        }
-    };
-
-    const saveWorkoutObject = async (allExercises) => {
-        const { workoutExercises, summary } = buildWorkoutPayload(allExercises);
         if (!workoutExercises.length) {
             return { workoutExercises: [], summary, personalRecords: [] };
         }
@@ -470,8 +481,16 @@ const FitScreen = () => {
                 summary,
             });
         } catch (error) {
-            console.error('Failed to save workout object:', error);
-            Alert.alert('Error', error.response?.data?.message || 'Failed to save workout');
+            const isNetworkError = !error?.response;
+            if (isNetworkError) {
+                const localId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                await enqueueWorkout({ localId, clerkUserId: user.id, exercises: workoutExercises, summary });
+                console.error('Saved offline, will sync later', error);
+                Alert.alert('Saved offline', 'Workout saved offline and will sync later.');
+            } else {
+                console.error('Failed to save workout object:', error);
+                Alert.alert('Error', error.response?.data?.message || 'Failed to save workout');
+            }
         }
 
         return { workoutExercises, summary, personalRecords };
@@ -481,16 +500,45 @@ const FitScreen = () => {
         const doneExercises = Array.isArray(allExercises) ? allExercises : [...completed, current];
         const sessionFeedback = await collectWorkoutFeedback(doneExercises);
         saveSessionAdaptation(sessionFeedback);
-        const result = await saveWorkoutObject(doneExercises);
-
+        const result = await saveWorkoutObject(doneExercises, elapsedSeconds);
+        const addedMinutes = (result.summary.totalDurationSeconds || 0) / 60;
         if (programKey && Number.isInteger(dayIndex)) {
             markDayCompleted(programKey, dayIndex);
         }
+        if (programMode === 'single' && programKey) {
+            recordProgramSession(programKey);
+        }
+        if (programMode === 'weekly' && programKey && Number.isInteger(dayIndex)) {
+            recordProgramSession(programKey, dayIndex);
+        }
 
         clearInProgressWorkout();
-        await clearInProgressFromBackend();
+        await clearInProgressFromBackend(user?.id);
         stopRestTimer();
         allowExitRef.current = true;
+
+        if (user?.id) {
+            try {
+                const metricsRes = await axios.get(`${API_BASE_URL}/users/metrics`, {
+                    params: { clerkId: user.id },
+                });
+                const metrics = metricsRes.data?.metrics || {};
+                setWorkout(Number(metrics.workouts) || 0);
+                setMinutes(Number(metrics.minutes) || 0);
+                setCalories(Number(metrics.calories) || 0);
+            } catch (err) {
+                // fallback to local increment
+                console.warn('Failed to fetch updated metrics, falling back to local increment:', err);
+                setWorkout((w) => w + 1);
+                setMinutes((m) => Math.round((m + addedMinutes) * 10) / 10);
+                setCalories((c) => c + (result.summary.totalCaloriesBurned || 0));
+            }
+        } else {
+            setWorkout((w) => w + 1);
+            setMinutes((m) => Math.round((m + addedMinutes) * 10) / 10);
+            setCalories((c) => c + (result.summary.totalCaloriesBurned || 0));
+        }
+
         navigation.replace('Celebration', {
             summary: result.summary,
             personalRecords: result.personalRecords,
@@ -525,7 +573,7 @@ const FitScreen = () => {
     const handleSkip = async () => {
         if (index + 1 >= exercises.length) {
             clearInProgressWorkout();
-            await clearInProgressFromBackend();
+            await clearInProgressFromBackend(user?.id);
             stopRestTimer();
             allowExitRef.current = true;
             navigation.navigate('App');
@@ -541,26 +589,27 @@ const FitScreen = () => {
     };
 
     const openQuitPrompt = (onQuitConfirmed) => {
-        const buildInProgressPayload = () => ({
-            clerkUserId: user?.id || null,
-            programKey: String(programKey || '').trim(),
-            dayIndex: Number.isInteger(dayIndex) ? dayIndex : null,
-            dayName: dayName || null,
-            totalDays: Number.isInteger(totalDays) ? totalDays : exercises.length,
-            exercises,
-            completedExercises: normalizeCompletedExercises(completed),
-            currentIndex: index,
-            currentTimeLeft: current?.type === 'time' ? toNumber(timeLeft, 0) : null,
-            savedAt: new Date().toISOString(),
-        });
+        const buildPayload = () =>
+            buildInProgressPayload({
+                userId: user?.id,
+                programKey,
+                dayIndex,
+                dayName,
+                totalDays,
+                exercises,
+                completedExercises: normalizeCompletedExercises(completed),
+                currentIndex: index,
+                currentTimeLeft: current?.type === 'time' ? toNumber(timeLeft, 0) : null,
+                elapsedSeconds,
+            });
 
         Alert.alert('Pause workout?', 'Why do you want to leave this workout?', [
             {
                 text: 'Away for a while',
                 onPress: async () => {
-                    const payload = buildInProgressPayload();
+                    const payload = buildPayload();
                     saveInProgressWorkout(payload);
-                    await saveInProgressToBackend(payload);
+                    await saveInProgressToBackend({ userId: user?.id, payload });
                     stopRestTimer();
                     allowExitRef.current = true;
                     navigation.navigate('App');
@@ -571,7 +620,7 @@ const FitScreen = () => {
                 style: 'destructive',
                 onPress: async () => {
                     clearInProgressWorkout();
-                    await clearInProgressFromBackend();
+                    await clearInProgressFromBackend(user?.id);
                     stopRestTimer();
                     setCompleted([]);
                     allowExitRef.current = true;
@@ -610,9 +659,6 @@ const FitScreen = () => {
 
                     const allExercises = [...completed, current];
                     setCompleted(allExercises);
-                    setWorkout((w) => w + 1);
-                    setMinutes((m) => m + 2.5);
-                    setCalories((c) => c + 6.3);
 
                     if (index + 1 < exercises.length) {
                         handleNext();
@@ -646,9 +692,6 @@ const FitScreen = () => {
     const onDonePress = () => {
         const allExercises = [...completed, current];
         setCompleted(allExercises);
-        setWorkout((w) => w + 1);
-        setMinutes((m) => m + 2.5);
-        setCalories((c) => c + 6.3);
 
         if (isLast) finishWorkout(allExercises);
         else handleNext();
@@ -718,6 +761,13 @@ const FitScreen = () => {
                             {current.target.toUpperCase()}
                         </Text>
                     )}
+
+                    {/* Session time */}
+                    <View style={styles.sessionTimeRow}>
+                        <Feather name="clock" size={12} color="#6C6C74" />
+                        <Text style={styles.sessionTimeLabel}>SESSION TIME</Text>
+                        <Text style={styles.sessionTimeValue}>{formatElapsed(elapsedSeconds)}</Text>
+                    </View>
 
                     {/* Timer / Reps display */}
                     <View style={styles.metricContainer}>
@@ -909,6 +959,30 @@ const styles = StyleSheet.create({
         fontWeight: '800',
         letterSpacing: 2,
         marginBottom: 16,
+    },
+    sessionTimeRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: '#15151B',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        marginBottom: 18,
+    },
+    sessionTimeLabel: {
+        color: '#6C6C74',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.6,
+    },
+    sessionTimeValue: {
+        color: '#F4F4F6',
+        fontSize: 12,
+        fontWeight: '800',
+        letterSpacing: 0.4,
     },
 
     // Metric

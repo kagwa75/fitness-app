@@ -303,6 +303,15 @@ export default function Profile() {
                         />
                         <View style={styles.rowDivider} />
                         <SettingRow
+                            iconName="scale-bathroom"
+                            iconLib="material"
+                            label="Body Tracker"
+                            accentColor="#00E5BE"
+                            onPress={() => navigation.navigate('bodyTracker')}
+                            delay={125}
+                        />
+                        <View style={styles.rowDivider} />
+                        <SettingRow
                             iconName="settings"
                             label="General Settings"
                             accentColor="#34C759"

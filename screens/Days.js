@@ -57,7 +57,7 @@ const AnimatedRow = ({ children, delay = 0 }) => {
 };
 
 // Workout day card
-const WorkoutDayCard = ({ workoutDay, index, exercises, onPress, isLocked, isCompleted }) => {
+const WorkoutDayCard = ({ workoutDay, index, exercises, onPress, isLocked, isCompleted}) => {
     const scaleAnim = useRef(new Animated.Value(1)).current;
 
     const handlePressIn = () =>
@@ -68,7 +68,7 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress, isLocked, isCom
     const accents = ['#FF4D2E', '#00E5BE', '#6C63FF', '#FFB800', '#FF4D8C', '#00C2FF'];
     const accent = accents[index % accents.length];
 
-    const targets = [...new Set(exercises.slice(0, 3).map((e) => e.target).filter(Boolean))];
+    const targets = [...new Set(exercises.map((e) => e.target).filter(Boolean))];
     const focusLabel = targets.length ? targets.join(' · ').toUpperCase() : workoutDay.focus?.toUpperCase() || 'FULL BODY';
 
     return (
@@ -98,6 +98,9 @@ const WorkoutDayCard = ({ workoutDay, index, exercises, onPress, isLocked, isCom
                         <View style={styles.dayInfo}>
                             <Text style={styles.dayName}>{workoutDay.name}</Text>
                             <Text style={styles.dayFocus}>{focusLabel}</Text>
+                            {workoutDay.sublabel ? (
+                                <Text style={styles.daySubLabel}>{workoutDay.sublabel}</Text>
+                            ) : null}
                             <View style={styles.dayMeta}>
                                 <View style={styles.metaTag}>
                                     <Feather name="list" size={10} color="#777" />
@@ -170,6 +173,7 @@ const Days = () => {
     const route = useRoute();
     const {
         getCompletedDaysForProgram,
+        getProgramSessionHistory,
         userProfile,
         getProgramAdaptation,
         saveProgramAdaptation,
@@ -178,7 +182,9 @@ const Days = () => {
     const [planMeta, setPlanMeta] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const { list = '', category = '', Days: programDays = [], image } = route.params || {};
+    const [feelin, setFeelin] = useState('normal');
+    const [regenSeed, setRegenSeed] = useState(0);
+    const { list = '', category = '', Days: programDays = [], image, initialMode, autoStart } = route.params || {};
 
     const programKey = useMemo(
         () => String(list || 'program').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-'),
@@ -189,11 +195,17 @@ const Days = () => {
     const reportedFatigue = readiness === 'fatigued' || adaptation?.reportedFatigue === true;
     const adaptationVersion = adaptation?.updatedAt || '';
     const completedDayIndexes = getCompletedDaysForProgram(programKey);
+    const sessionHistory = getProgramSessionHistory(programKey);
+    const normalizedHistory = useMemo(
+        () => sessionHistory.map((entry) => (typeof entry === 'string' ? entry : entry?.at)).filter(Boolean),
+        [sessionHistory]
+    );
 
     const heroScale = useRef(new Animated.Value(1.08)).current;
     const heroOpacity = useRef(new Animated.Value(0)).current;
 
     useEffect(() => {
+        
         Animated.parallel([
             Animated.timing(heroScale, { toValue: 1, duration: 800, useNativeDriver: true }),
             Animated.timing(heroOpacity, { toValue: 1, duration: 600, useNativeDriver: true }),
@@ -220,6 +232,7 @@ const Days = () => {
                             : 0,
                         reportedFatigue,
                     },
+                    seedOffset: regenSeed,
                 });
 
                 if (!isActive) return;
@@ -244,15 +257,61 @@ const Days = () => {
         return () => {
             isActive = false;
         };
-    }, [programDays, userProfile, category, list, completedDayIndexes.length, reportedFatigue, adaptationVersion]);
+    }, [programDays, userProfile, category, list, completedDayIndexes.length, reportedFatigue, adaptationVersion, regenSeed]);
 
     const handleReadinessChange = (value) => {
+        setFeelin(value);
         saveProgramAdaptation(programKey, {
             readiness: value,
             reportedFatigue: value === 'fatigued',
         });
     };
+    const programsWithoutDays = ['chest', 'back', 'shoulders'];
+    const isWithoutDays = programsWithoutDays.includes(programKey);
+    const [sessionMode, setSessionMode] = useState(initialMode || 'single');
+    const didInitModeRef = useRef(false);
+    const autoStartRef = useRef(false);
 
+    useEffect(() => {
+        if (!isWithoutDays || didInitModeRef.current) return;
+        const preferredMode = adaptation?.preferredMode;
+        if (preferredMode === 'single' || preferredMode === 'weekly') {
+            setSessionMode(preferredMode);
+        }
+        didInitModeRef.current = true;
+    }, [isWithoutDays, adaptation?.preferredMode]);
+
+    useEffect(() => {
+        if (!isWithoutDays) return;
+        if (sessionMode !== 'single' && sessionMode !== 'weekly') return;
+        saveProgramAdaptation(programKey, { preferredMode: sessionMode });
+    }, [isWithoutDays, programKey, saveProgramAdaptation, sessionMode]);
+
+    const sessionDays = useMemo(() => {
+        const source = personalizedDays.length ? personalizedDays : programDays;
+        return source.slice(0, 4);
+    }, [personalizedDays, programDays]);
+
+    useEffect(() => {
+        if (!isWithoutDays || !autoStart || autoStartRef.current || loading) return;
+        if (sessionMode !== 'single') return;
+
+        const fallbackIndex = planMeta?.progression?.week === 1 ? 0 : 1;
+        const fallbackExercises = programDays[fallbackIndex]?.exercises || programDays[0]?.exercises || [];
+        const exercises = personalizedDays[0]?.exercises || fallbackExercises;
+
+        autoStartRef.current = true;
+        navigation.replace('Workout', {
+            exercises,
+            image,
+            dayName: '',
+            dayIndex: 0,
+            totalDays: 1,
+            programKey,
+            programMode: 'single',
+        });
+    }, [autoStart, image, isWithoutDays, loading, navigation, personalizedDays, planMeta, programDays, programKey, sessionMode]);
+    
     if (loading) {
         return (
             <View style={styles.loadingContainer}>
@@ -294,10 +353,11 @@ const Days = () => {
                             <Text style={styles.heroBadgeText}>PROGRAM</Text>
                         </View>
                         <Text style={styles.heroTitle}>{list}</Text>
-                        <Text style={styles.heroSubtitle}>{personalizedDays.length || programDays.length} workout days</Text>
+                        {!isWithoutDays && <Text style={styles.heroSubtitle}>{personalizedDays.length || programDays.length} workout days</Text>}
+                        
                         {planMeta?.progression ? (
                             <Text style={styles.heroCycleText}>
-                                WEEK {planMeta.progression.week} · {String(planMeta.progression.phase || '').toUpperCase()}
+                                WEEK {planMeta?.progression?.week} · {String(planMeta?.progression?.phase || '').toUpperCase()}
                             </Text>
                         ) : null}
                     </View>
@@ -320,9 +380,11 @@ const Days = () => {
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
             >
-                <AnimatedRow delay={150}>
-                    <Text style={styles.sectionLabel}>SELECT A DAY</Text>
-                </AnimatedRow>
+                {!isWithoutDays ? (
+                    <AnimatedRow delay={150}>
+                        <Text style={styles.sectionLabel}>SELECT A DAY</Text>
+                    </AnimatedRow>
+                ) : null}
 
                 <AnimatedRow delay={190}>
                     <View style={styles.readinessCard}>
@@ -370,12 +432,142 @@ const Days = () => {
                         ) : null}
                     </View>
                 </AnimatedRow>
+                 {isWithoutDays ? (
+                    <View style={styles.noDaysWrapper}>
+                        <View style={styles.modeToggle}>
+                            <TouchableOpacity
+                                style={[
+                                    styles.modePill,
+                                    sessionMode === 'single' && styles.modePillActive,
+                                ]}
+                                onPress={() => setSessionMode('single')}
+                            >
+                                <Text
+                                    style={[
+                                        styles.modePillText,
+                                        sessionMode === 'single' && styles.modePillTextActive,
+                                    ]}
+                                >
+                                    Single Session
+                                </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[
+                                    styles.modePill,
+                                    sessionMode === 'weekly' && styles.modePillActive,
+                                ]}
+                                onPress={() => setSessionMode('weekly')}
+                            >
+                                <Text
+                                    style={[
+                                        styles.modePillText,
+                                        sessionMode === 'weekly' && styles.modePillTextActive,
+                                    ]}
+                                >
+                                    Weekly Split
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
 
-                {(personalizedDays.length ? personalizedDays : programDays).map((workoutDay, index) => {
+                        {sessionMode === 'single' ? (
+                            <View style={styles.startSection}>
+                                <Text style={styles.startSectionTitle}>Quick Start</Text>
+                                <Text style={styles.startSectionSubtitle}>Single‑session workout tailored to your readiness.</Text>
+                                <View style={styles.startActions}>
+                                    <TouchableOpacity
+                                        style={styles.startCard}
+                                        onPress={() => {
+                                            const fallbackIndex = planMeta?.progression?.week === 1 ? 0 : 1;
+                                            const fallbackExercises = programDays[fallbackIndex]?.exercises || programDays[0]?.exercises || [];
+                                            const exercises = personalizedDays[0]?.exercises || fallbackExercises;
+
+                                           navigation.navigate('Workout', {
+                                                exercises,
+                                                image,
+                                                dayName: '',
+                                                dayIndex: 0,
+                                                totalDays: 1,
+                                                programKey,
+                                                programMode: 'single',
+                                            });
+                                        }}
+                                    >
+                                        <MaterialCommunityIcons name="whistle" size={14} color="#FFB800" />
+                                        <Text
+                                            style={[
+                                                styles.startButtonText,
+                                                feelin === 'normal' ? styles.startButtonTextNormal : styles.startButtonTextAlt,
+                                            ]}
+                                        >
+                                            Start
+                                        </Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={styles.regenButton}
+                                        onPress={() => setRegenSeed(Date.now())}
+                                    >
+                                        <Feather name="refresh-cw" size={12} color="#9A9AAE" />
+                                        <Text style={styles.regenText}>Regenerate</Text>
+                                    </TouchableOpacity>
+                                </View>
+
+                                <View style={styles.historyBlock}>
+                                    <Text style={styles.historyTitle}>Recent Sessions</Text>
+                                    {normalizedHistory.length ? (
+                                        normalizedHistory.slice(0, 3).map((entry, idx) => (
+                                            <Text key={`${entry}-${idx}`} style={styles.historyItem}>
+                                                {new Date(entry).toLocaleDateString()}
+                                            </Text>
+                                        ))
+                                    ) : (
+                                        <Text style={styles.historyEmpty}>No sessions yet</Text>
+                                    )}
+                                </View>
+                            </View>
+                        ) : (
+                            <>
+                                <Text style={styles.sectionLabel}>SESSIONS</Text>
+                                {sessionDays.map((workoutDay, index) => {
+                                    const dayExercises = Array.isArray(workoutDay?.exercises) ? workoutDay.exercises : [];
+                                    const recentEntry = sessionHistory.find(
+                                        (entry) => entry && typeof entry === 'object' && entry.sessionIndex === index
+                                    ) || normalizedHistory[0];
+                                    const recentAt = typeof recentEntry === 'string' ? recentEntry : recentEntry?.at;
+                                    const recentLabel = recentAt ? new Date(recentAt).toLocaleDateString() : null;
+                                    return (
+                                        <WorkoutDayCard
+                                            key={index}
+                                            workoutDay={{
+                                                ...workoutDay,
+                                                name: `Session ${index + 1}`,
+                                                sublabel: recentLabel ? `Last completed ${recentLabel}` : null,
+                                            }}
+                                            index={index}
+                                            exercises={dayExercises}
+                                            isLocked={false}
+                                            isCompleted={false}
+                                            onPress={() => {
+                                                navigation.navigate('Workout', {
+                                                    exercises: dayExercises,
+                                                    image,
+                                                    dayIndex: index,
+                                                    dayName: `Session ${index + 1}`,
+                                                    totalDays: sessionDays.length,
+                                                    programKey,
+                                                    programMode: 'weekly',
+                                                });
+                                            }}
+                                        />
+                                    );
+                                })}
+                            </>
+                        )}
+                    </View>
+                ) :
+               (personalizedDays.length ? personalizedDays : programDays).map((workoutDay, index) => {
                     const isCompleted = completedDayIndexes.includes(index);
                     const isLocked = index > 0 && !completedDayIndexes.includes(index - 1);
                     const dayExercises = Array.isArray(workoutDay?.exercises) ? workoutDay.exercises : [];
-
                     return (
                         <WorkoutDayCard
                             key={index}
@@ -578,6 +770,124 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         lineHeight: 14,
     },
+    noDaysWrapper: {
+        gap: 12,
+    },
+    modeToggle: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    modePill: {
+        flex: 1,
+        paddingVertical: 10,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        backgroundColor: '#171723',
+        alignItems: 'center',
+    },
+    modePillActive: {
+        borderColor: 'rgba(255,77,46,0.5)',
+        backgroundColor: 'rgba(255,77,46,0.12)',
+    },
+    modePillText: {
+        color: '#8B8BA6',
+        fontSize: 11,
+        fontWeight: '700',
+        letterSpacing: 0.4,
+    },
+    modePillTextActive: {
+        color: '#FF4D2E',
+    },
+    startSection: {
+        padding: 14,
+        backgroundColor: '#141419',
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        marginBottom: 12,
+        gap: 8,
+    },
+    startActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
+    startSectionTitle: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '800',
+        letterSpacing: 0.4,
+    },
+    startSectionSubtitle: {
+        color: '#9A9AAE',
+        fontSize: 11,
+        fontWeight: '500',
+        lineHeight: 14,
+    },
+    startCard: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        marginTop: 6,
+        paddingVertical: 10,
+        borderRadius: 12,
+        backgroundColor: 'rgba(255,77,46,0.08)',
+        borderWidth: 1,
+        borderColor: 'rgba(255,77,46,0.2)',
+        flex: 1,
+    },
+    startButtonText: {
+        fontSize: 16,
+        fontWeight: '600',
+        marginLeft: 4,
+    },
+    startButtonTextNormal: {
+        color: '#49c0b6',
+    },
+    startButtonTextAlt: {
+        color: '#FFB800',
+    },
+    regenButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingVertical: 10,
+        paddingHorizontal: 10,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        backgroundColor: '#171723',
+    },
+    regenText: {
+        color: '#9A9AAE',
+        fontSize: 11,
+        fontWeight: '700',
+    },
+    historyBlock: {
+        marginTop: 6,
+        paddingTop: 8,
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(255,255,255,0.08)',
+        gap: 4,
+    },
+    historyTitle: {
+        color: '#B5B5C7',
+        fontSize: 11,
+        fontWeight: '700',
+        letterSpacing: 0.4,
+    },
+    historyItem: {
+        color: '#E2E2F0',
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    historyEmpty: {
+        color: '#6D6D84',
+        fontSize: 11,
+        fontWeight: '600',
+    },
     dayCard: {
         backgroundColor: '#16161A',
         borderRadius: 20,
@@ -630,6 +940,12 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         letterSpacing: 1,
         marginBottom: 7,
+    },
+    daySubLabel: {
+        color: '#8A8AA5',
+        fontSize: 10,
+        fontWeight: '600',
+        marginBottom: 6,
     },
     dayMeta: {
         flexDirection: 'row',

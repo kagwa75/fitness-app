@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import {
     Image,
     Modal,
@@ -192,7 +192,7 @@ const ExerciseModal = ({ visible, onClose, data, image, accentColor }) => {
 };
 
 // ── Card ──────────────────────────────────────────────────────
-export default function ExerciseCard({ data, image, accentColor = '#FF4D2E' }) {
+function ExerciseCard({ data, image, accentColor = '#FF4D2E' }) {
     const [modalVisible, setModalVisible] = useState(false);
     const scaleAnim = useRef(new Animated.Value(1)).current;
     const categoryIcon = CATEGORY_ICONS[data?.category] || CATEGORY_ICONS.default;
@@ -294,6 +294,8 @@ export default function ExerciseCard({ data, image, accentColor = '#FF4D2E' }) {
         </>
     );
 }
+
+export default memo(ExerciseCard);
 
 const styles = StyleSheet.create({
     // Card

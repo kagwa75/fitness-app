@@ -1,15 +1,20 @@
 import React, { createContext, useCallback, useEffect, useMemo, useState } from "react";
 import { Platform } from "react-native";
+import NetInfo from "@react-native-community/netinfo";
 import * as SecureStore from "expo-secure-store";
 import axios from "axios";
 import API_BASE_URL from "./constants/api";
+import { preloadCustomLibrary, preloadExerciseLibrary, preloadRecords } from "./utils/preload";
+import { dequeueWorkout, readWorkoutQueue } from "./utils/offlineQueue";
 
 const FitnessItems = createContext();
 
 const DAY_PROGRESS_STORAGE_KEY = "program_day_progress_v1";
+const PROGRAM_SESSION_HISTORY_KEY = "program_session_history_v1";
 const IN_PROGRESS_WORKOUT_STORAGE_KEY = "in_progress_workout_v1";
 const USER_PROFILE_STORAGE_KEY = "user_onboarding_profile_v1";
 const PROGRAM_ADAPTATION_STORAGE_KEY = "program_adaptation_v1";
+const METRICS_STORAGE_KEY = "fitness_metrics_v1";
 
 const VALID_GENDERS = new Set(["male", "female", "non_binary", "prefer_not_to_say"]);
 const VALID_GOALS = new Set(["lose_weight", "gain_weight", "build_muscle", "maintain_fitness"]);
@@ -28,6 +33,8 @@ const getUserProfileStorageKey = (clerkUserId) =>
   clerkUserId ? `${USER_PROFILE_STORAGE_KEY}_${clerkUserId}` : `${USER_PROFILE_STORAGE_KEY}_guest`;
 const getProgramAdaptationStorageKey = (clerkUserId) =>
   clerkUserId ? `${PROGRAM_ADAPTATION_STORAGE_KEY}_${clerkUserId}` : `${PROGRAM_ADAPTATION_STORAGE_KEY}_guest`;
+const getMetricsStorageKey = (clerkUserId) =>
+  clerkUserId ? `${METRICS_STORAGE_KEY}_${clerkUserId}` : `${METRICS_STORAGE_KEY}_guest`;
 
 //check if it is web or native and if web, check if localStorage is available. If native, check if SecureStore is available. This is used to determine where to read/write data for user profile and in-progress workout.
 const canUseWebStorage = () =>
@@ -278,7 +285,9 @@ const FitnessContext = ({ children, clerkUserId }) => {
   const [workout,            setWorkout]            = useState(0);
   const [calories,           setCalories]           = useState(0);
   const [minutes,            setMinutes]            = useState(0);
+  const [isMetricsHydrated, setIsMetricsHydrated] = useState(false);
   const [dayProgress,        setDayProgress]        = useState({});
+  const [programSessionHistory, setProgramSessionHistory] = useState({});
   const [inProgressWorkout,  setInProgressWorkout]  = useState(null);
   const [userProfile,        setUserProfile]        = useState(null);
   const [isUserProfileHydrated, setIsUserProfileHydrated] = useState(false);
@@ -298,6 +307,66 @@ const FitnessContext = ({ children, clerkUserId }) => {
     load();
   }, []);
 
+  // ── Load program session history ────────────────────────────────────────────
+  useEffect(() => {
+    const load = async () => {
+      const raw = await readValueByKey(PROGRAM_SESSION_HISTORY_KEY);
+      const parsed = safeParseObject(raw);
+      setProgramSessionHistory(parsed);
+    };
+    load();
+  }, []);
+
+  // ── Load workout metrics (local first, then cloud) ──────────────────────────
+  useEffect(() => {
+    let isActive = true;
+    const load = async () => {
+      const storageKey = getMetricsStorageKey(clerkUserId);
+      try {
+        const raw = await readValueByKey(storageKey);
+        const parsed = safeParseObject(raw);
+        if (isActive) {
+          setWorkout(Number(parsed.workout) || 0);
+          setMinutes(Number(parsed.minutes) || 0);
+          setCalories(Number(parsed.calories) || 0);
+        }
+      } catch {
+        if (isActive) {
+          setWorkout(0);
+          setMinutes(0);
+          setCalories(0);
+        }
+      } finally {
+        if (isActive) setIsMetricsHydrated(true);
+      }
+
+      if (!clerkUserId) return;
+      try {
+        const response = await axios.get(`${API_BASE_URL}/users/metrics`, {
+          params: { clerkId: clerkUserId },
+        });
+        const metrics = response.data?.metrics || {};
+        const totals = {
+          workout: Number(metrics.workouts) || 0,
+          minutes: Number(metrics.minutes) || 0,
+          calories: Number(metrics.calories) || 0,
+        };
+        if (isActive) {
+          setWorkout(totals.workout);
+          setMinutes(totals.minutes);
+          setCalories(totals.calories);
+        }
+        writeValueByKey(storageKey, JSON.stringify(totals));
+      } catch (error) {
+        console.warn("Could not sync workout metrics:", error?.message || error);
+      }
+    };
+    load();
+    return () => {
+      isActive = false;
+    };
+  }, [clerkUserId]);
+
   // ── Load in-progress workout ────────────────────────────────────────────────
   useEffect(() => {
     const load = async () => {
@@ -312,6 +381,25 @@ const FitnessContext = ({ children, clerkUserId }) => {
     };
     load();
   }, []);
+
+  // ── Preload cached data for faster first visit ──────────────────────────────
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const tasks = [
+          preloadExerciseLibrary(API_BASE_URL),
+          preloadCustomLibrary(API_BASE_URL),
+        ];
+        if (clerkUserId) {
+          tasks.push(preloadRecords(API_BASE_URL, clerkUserId));
+        }
+        await Promise.all(tasks);
+      } catch (error) {
+        console.warn("Preload failed:", error?.message || error);
+      }
+    };
+    run();
+  }, [clerkUserId]);
 
   // ── Load user profile: local first → cloud wins if newer ───────────────────
   useEffect(() => {
@@ -390,10 +478,48 @@ const FitnessContext = ({ children, clerkUserId }) => {
       isActive = false;
     };
   }, [clerkUserId]);
+  // ── Sync queued workouts when regaining connectivity or signing in ─────────────
+useEffect(() => {
+  let isMounted = true;
+    const syncQueued = async () => {
+      if (!clerkUserId) return;
+      if (!isMounted) return;
+      const queue = await readWorkoutQueue();
+      for (const item of queue) {
+        try {
+          await axios.post(`${API_BASE_URL}/users/workouts`, {
+            clerkUserId: item.clerkUserId,
+            exercises: item.exercises,
+            summary: item.summary,
+          });
+          await dequeueWorkout(item.localId);
+        } catch (err) {
+          // stop on first failure (avoid loops)
+          break;
+        }
+      }
+    };
+
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      if (state.isConnected) {
+        syncQueued();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+
+  }, [clerkUserId]);
 
   // ── Persist helpers ─────────────────────────────────────────────────────────
   const persistDayProgress = useCallback((nextMap) => {
     writeValueByKey(DAY_PROGRESS_STORAGE_KEY, JSON.stringify(nextMap));
+  }, []);
+
+  const persistProgramSessionHistory = useCallback((nextMap) => {
+    writeValueByKey(PROGRAM_SESSION_HISTORY_KEY, JSON.stringify(nextMap));
   }, []);
 
   const persistInProgressWorkout = useCallback((payload) => {
@@ -406,6 +532,12 @@ const FitnessContext = ({ children, clerkUserId }) => {
     const storageKey = getProgramAdaptationStorageKey(clerkUserId);
     writeValueByKey(storageKey, JSON.stringify(programAdaptation));
   }, [clerkUserId, isProgramAdaptationHydrated, programAdaptation]);
+
+  useEffect(() => {
+    if (!isMetricsHydrated) return;
+    const storageKey = getMetricsStorageKey(clerkUserId);
+    writeValueByKey(storageKey, JSON.stringify({ workout, minutes, calories }));
+  }, [clerkUserId, isMetricsHydrated, workout, minutes, calories]);
 
   // ── Day progress ────────────────────────────────────────────────────────────
   const markDayCompleted = useCallback((programKey, dayIndex) => {
@@ -426,6 +558,31 @@ const FitnessContext = ({ children, clerkUserId }) => {
     if (!safeProgramKey) return [];
     return Array.isArray(dayProgress[safeProgramKey]) ? dayProgress[safeProgramKey] : [];
   }, [dayProgress]);
+
+  // ── Program session history ────────────────────────────────────────────────
+  const recordProgramSession = useCallback((programKey, sessionIndex = null, at = new Date().toISOString()) => {
+    const safeProgramKey = String(programKey || "").trim();
+    if (!safeProgramKey) return;
+
+    setProgramSessionHistory((prev) => {
+      const existing = Array.isArray(prev[safeProgramKey]) ? prev[safeProgramKey] : [];
+      const entry = sessionIndex === null || !Number.isInteger(sessionIndex)
+        ? at
+        : { at, sessionIndex };
+      const next = {
+        ...prev,
+        [safeProgramKey]: [entry, ...existing].slice(0, 12),
+      };
+      persistProgramSessionHistory(next);
+      return next;
+    });
+  }, [persistProgramSessionHistory]);
+
+  const getProgramSessionHistory = useCallback((programKey) => {
+    const safeProgramKey = String(programKey || "").trim();
+    if (!safeProgramKey) return [];
+    return Array.isArray(programSessionHistory[safeProgramKey]) ? programSessionHistory[safeProgramKey] : [];
+  }, [programSessionHistory]);
 
   // ── In-progress workout ─────────────────────────────────────────────────────
   const saveInProgressWorkout = useCallback((payload) => {
@@ -575,6 +732,8 @@ const FitnessContext = ({ children, clerkUserId }) => {
         dayProgress,
         markDayCompleted,
         getCompletedDaysForProgram,
+        recordProgramSession,
+        getProgramSessionHistory,
         inProgressWorkout,
         saveInProgressWorkout,
         clearInProgressWorkout,
