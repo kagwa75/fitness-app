@@ -111,6 +111,35 @@ const sanitizeSessionFeedback = (entry) => {
   };
 };
 
+const sanitizeExerciseOverrides = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+
+  const next = {};
+  Object.entries(value).forEach(([rawKey, override]) => {
+    const safeKey = String(rawKey || "").trim().toLowerCase().replace(/\s+/g, "_");
+    if (!safeKey || !override || typeof override !== "object" || Array.isArray(override)) return;
+
+    const type = override.type === "time" ? "time" : "reps";
+    if (type === "time") {
+      const duration = Math.round(Number(override.duration));
+      if (!Number.isFinite(duration)) return;
+      next[safeKey] = { type: "time", duration: Math.max(5, duration) };
+      return;
+    }
+
+    const sets = Math.round(Number(override.sets));
+    if (!Number.isFinite(sets)) return;
+    const reps = Math.round(Number(override.reps));
+    if (Number.isFinite(reps) && reps > 0) {
+      next[safeKey] = { type: "reps", sets: Math.max(1, sets), reps };
+    } else {
+      next[safeKey] = { type: "reps", sets: Math.max(1, sets) };
+    }
+  });
+
+  return next;
+};
+
 const sanitizeProgramAdaptationMap = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
 
@@ -128,6 +157,7 @@ const sanitizeProgramAdaptationMap = (value) => {
     const avgRpe = Number(adaptation.avgRpe);
     const avgDifficultyScore = Number(adaptation.avgDifficultyScore);
     const avgCompletionRate = Number(adaptation.avgCompletionRate);
+    const exerciseOverrides = sanitizeExerciseOverrides(adaptation.exerciseOverrides);
     const painPoints = Array.isArray(adaptation.painPoints)
       ? [...new Set(
           adaptation.painPoints
@@ -157,6 +187,7 @@ const sanitizeProgramAdaptationMap = (value) => {
       avgRpe: Number.isFinite(avgRpe) ? clampNumber(avgRpe, 1, 10) : null,
       avgDifficultyScore: Number.isFinite(avgDifficultyScore) ? clampNumber(avgDifficultyScore, 1, 3) : null,
       avgCompletionRate: Number.isFinite(avgCompletionRate) ? clampNumber(avgCompletionRate, 0, 1) : null,
+      exerciseOverrides,
       painPoints,
       contraindications,
       lastSession,
@@ -188,6 +219,7 @@ const sanitizeInProgressWorkout = (value) => {
   return {
     clerkUserId,
     programKey,
+    programMode: value.programMode ? String(value.programMode) : null,
     dayIndex:        Number.isInteger(value.dayIndex) ? value.dayIndex : null,
     dayName:         value.dayName ? String(value.dayName) : null,
     totalDays:       Number.isInteger(value.totalDays) ? value.totalDays : exercises.length,
@@ -197,6 +229,9 @@ const sanitizeInProgressWorkout = (value) => {
     currentTimeLeft: Number.isFinite(Number(value.currentTimeLeft))
       ? Math.max(0, Math.round(Number(value.currentTimeLeft)))
       : null,
+    elapsedSeconds: Number.isFinite(Number(value.elapsedSeconds))
+      ? Math.max(0, Math.round(Number(value.elapsedSeconds)))
+      : 0,
     savedAt: value.savedAt || new Date().toISOString(),
   };
 };

@@ -24,6 +24,8 @@ import Feedback from './components/Feedback';
 import RestMiniTimer from './components/RestMiniTimer';
 import PersonalizedPlanScreen from './screens/PersonalizedPlanScreen';
 import BodyTrackerScreen from './screens/BodyTrackerScreen';
+import generalS from './screens/generalS';
+import SessionDetailScreen from './screens/SessionDetailScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -273,6 +275,8 @@ export default function AppNavigation() {
                 <Stack.Screen name="userProfile" component={UserProfile} options={{ headerShown: false }} />
                 <Stack.Screen name="bodyTracker" component={BodyTrackerScreen} options={{ headerShown: false }} />
                 <Stack.Screen name="feedback" component={Feedback} options={{ headerShown: false }} />
+                <Stack.Screen name="generalS" component={generalS} options={{ headerShown: false }} />
+                <Stack.Screen name="SessionDetail" component={SessionDetailScreen} options={{ headerShown: false }} />
             </Stack.Navigator>
             <RestMiniTimer
                 currentRouteName={currentRouteName}

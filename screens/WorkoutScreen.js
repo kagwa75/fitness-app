@@ -34,6 +34,13 @@ const toTimestamp = (value) => {
     return Number.isFinite(timestamp) ? timestamp : 0;
 };
 
+const formatElapsed = (totalSeconds) => {
+    const safeSeconds = Number.isFinite(totalSeconds) ? Math.max(0, Math.round(totalSeconds)) : 0;
+    const minutes = Math.floor(safeSeconds / 60);
+    const seconds = safeSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
 const ExerciseRow = ({ item, index, isCompleted }) => {
     const slideAnim = useRef(new Animated.Value(30)).current;
     const opacityAnim = useRef(new Animated.Value(0)).current;
@@ -235,6 +242,11 @@ const WorkoutScreen = () => {
             : completedNameSet;
     const completedCount = exercises.filter((ex) => activeCompletedNameSet.has(getExerciseName(ex))).length;
     const progress = exercises.length ? completedCount / exercises.length : 0;
+    const remainingCount = Math.max(0, exercises.length - completedCount);
+    const savedAtLabel = inProgressWorkout?.savedAt
+        ? new Date(inProgressWorkout.savedAt).toLocaleString()
+        : null;
+    const savedElapsedLabel = formatElapsed(inProgressWorkout?.elapsedSeconds);
 
     const startFreshWorkout = async ({ clearRemote = false } = {}) => {
         if (clearRemote) {
@@ -330,6 +342,49 @@ const WorkoutScreen = () => {
                         />
                     </View>
                 </View>
+
+                {hasMatchingSavedSession && inProgressWorkout ? (
+                    <View style={styles.resumeCard}>
+                        <View style={styles.resumeHeader}>
+                            <View>
+                                <Text style={styles.resumeTitle}>Resume your session</Text>
+                                {savedAtLabel ? (
+                                    <Text style={styles.resumeSubtitle}>Saved {savedAtLabel}</Text>
+                                ) : null}
+                            </View>
+                            <View style={styles.resumeBadge}>
+                                <Feather name="clock" size={12} color="#00E5BE" />
+                                <Text style={styles.resumeBadgeText}>{savedElapsedLabel}</Text>
+                            </View>
+                        </View>
+
+                        <View style={styles.resumeStatsRow}>
+                            <View style={styles.resumeStat}>
+                                <Text style={styles.resumeStatValue}>{completedCount}</Text>
+                                <Text style={styles.resumeStatLabel}>Done</Text>
+                            </View>
+                            <View style={styles.resumeStatDivider} />
+                            <View style={styles.resumeStat}>
+                                <Text style={styles.resumeStatValue}>{remainingCount}</Text>
+                                <Text style={styles.resumeStatLabel}>Left</Text>
+                            </View>
+                            <View style={styles.resumeStatDivider} />
+                            <View style={styles.resumeStat}>
+                                <Text style={styles.resumeStatValue}>{Math.round(progress * 100)}%</Text>
+                                <Text style={styles.resumeStatLabel}>Progress</Text>
+                            </View>
+                        </View>
+
+                        <View style={styles.resumeActions}>
+                            <TouchableOpacity onPress={() => startFreshWorkout({ clearRemote: true })} style={styles.resumeBtnGhost}>
+                                <Text style={styles.resumeBtnGhostText}>Restart</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={resumeSavedWorkout} style={styles.resumeBtnPrimary}>
+                                <Text style={styles.resumeBtnPrimaryText}>Resume</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                ) : null}
 
                 {/* Exercise list */}
                 <View style={styles.listContainer}>
@@ -461,6 +516,112 @@ const styles = StyleSheet.create({
         height: '100%',
         backgroundColor: '#FF4D2E',
         borderRadius: 4,
+    },
+    resumeCard: {
+        marginHorizontal: 20,
+        marginTop: 16,
+        padding: 16,
+        borderRadius: 18,
+        backgroundColor: '#16161C',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+    },
+    resumeHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+    },
+    resumeTitle: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: '900',
+    },
+    resumeSubtitle: {
+        color: '#7C7C90',
+        fontSize: 11,
+        fontWeight: '700',
+        marginTop: 4,
+    },
+    resumeBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 14,
+        backgroundColor: 'rgba(0,229,190,0.12)',
+        borderWidth: 1,
+        borderColor: 'rgba(0,229,190,0.3)',
+    },
+    resumeBadgeText: {
+        color: '#00E5BE',
+        fontSize: 12,
+        fontWeight: '800',
+    },
+    resumeStatsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginTop: 14,
+        paddingVertical: 10,
+        borderRadius: 14,
+        backgroundColor: '#1C1C24',
+    },
+    resumeStat: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+    },
+    resumeStatValue: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: '900',
+    },
+    resumeStatLabel: {
+        color: '#6E6E86',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.1,
+    },
+    resumeStatDivider: {
+        width: 1,
+        height: 32,
+        backgroundColor: 'rgba(255,255,255,0.08)',
+    },
+    resumeActions: {
+        flexDirection: 'row',
+        gap: 10,
+        marginTop: 14,
+    },
+    resumeBtnGhost: {
+        flex: 1,
+        borderRadius: 14,
+        paddingVertical: 12,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.12)',
+        backgroundColor: '#1B1B22',
+    },
+    resumeBtnGhostText: {
+        color: '#C7C7D6',
+        fontSize: 12,
+        fontWeight: '800',
+        letterSpacing: 0.8,
+    },
+    resumeBtnPrimary: {
+        flex: 1,
+        borderRadius: 14,
+        paddingVertical: 12,
+        alignItems: 'center',
+        backgroundColor: '#00E5BE',
+    },
+    resumeBtnPrimaryText: {
+        color: '#0C0C10',
+        fontSize: 12,
+        fontWeight: '900',
+        letterSpacing: 0.8,
     },
 
     // List

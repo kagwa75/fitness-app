@@ -18,6 +18,7 @@ import Workouts from '../data/exercises';
 import API_BASE_URL from '../constants/api';
 import { readCache, writeCache, isCacheFresh } from '../utils/localCache';
 import { fetchAllApiExercises, getExerciseApiEndpoints, normalizeApiExercise } from '../utils/exerciseApi';
+import { readSearchCache, storeSearchResult, getCachedSearch } from '../utils/exerciseSearchCache';
 import { EXERCISES_CACHE_KEY, EXERCISES_CACHE_TTL_MS } from '../constants/cache';
 
 const ACCENT_MAP = {
@@ -55,7 +56,39 @@ const normalizeLocalExercise = (exercise, index) => ({
     name: normalizeText(exercise?.name),
     category: normalizeCategoryLabel(exercise?.category),
     image: normalizeText(exercise?.image) || FALLBACK_IMAGE,
+    equipment: toTitleCase(exercise?.equipment || 'Bodyweight'),
+    difficulty: toTitleCase(exercise?.difficulty || 'Beginner'),
 });
+
+
+const FilterChip = ({ label, isActive, onPress }) => {
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+
+    const handlePressIn = () =>
+        Animated.spring(scaleAnim, { toValue: 0.93, useNativeDriver: true, tension: 300 }).start();
+    const handlePressOut = () =>
+        Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
+
+    return (
+        <TouchableOpacity
+            onPress={onPress}
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            activeOpacity={1}
+        >
+            <Animated.View
+                style={[
+                    styles.chip,
+                    isActive && { backgroundColor: '#34C759', borderColor: '#34C759' },
+                    !isActive && { borderColor: 'rgba(255,255,255,0.08)' },
+                    { transform: [{ scale: scaleAnim }] },
+                ]}
+            >
+                <Text style={[styles.chipText, isActive && { color: '#fff' }]}>{label}</Text>
+            </Animated.View>
+        </TouchableOpacity>
+    );
+};
 
 // ── Category chip ──────────────────────────────────────────────
 const CategoryChip = ({ label, isActive, onPress }) => {
@@ -94,7 +127,6 @@ const CategoryChip = ({ label, isActive, onPress }) => {
         </TouchableOpacity>
     );
 };
-
 // ── Stat badge (header) ────────────────────────────────────────
 const StatBadge = ({ count, total }) => (
     <View style={styles.statBadge}>
@@ -173,8 +205,11 @@ export default function Exercises() {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('All');
     const [apiExercises, setApiExercises] = useState([]);
+    const [searchCache, setSearchCache] = useState({});
     const [searchFocused, setSearchFocused] = useState(false);
     const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+    const [selectedEquipment, setSelectedEquipment] = useState('All');
+    const [selectedDifficulty, setSelectedDifficulty] = useState('All');
 
     const scrollY = useRef(new Animated.Value(0)).current;
     const searchScale = useRef(new Animated.Value(1)).current;
@@ -185,6 +220,14 @@ export default function Exercises() {
     const allExercises = useMemo(() => [...localExercises, ...apiExercises], [localExercises, apiExercises]);
     const categories = useMemo(
         () => ['All', ...new Set(allExercises.map((item) => item.category).filter(Boolean))],
+        [allExercises]
+    );
+    const equipmentOptions = useMemo(
+        () => ['All', ...new Set(allExercises.map((item) => toTitleCase(item.equipment)).filter(Boolean))],
+        [allExercises]
+    );
+    const difficultyOptions = useMemo(
+        () => ['All', ...new Set(allExercises.map((item) => toTitleCase(item.difficulty)).filter(Boolean))],
         [allExercises]
     );
 
@@ -201,7 +244,11 @@ export default function Exercises() {
         for (const endpoint of [...new Set(API_ENDPOINT_CANDIDATES)]) {
             try {
                 const rows = await fetchAllApiExercises(endpoint);
-                const normalized = rows.map((item, index) => normalizeApiExercise(item, index));
+                const normalized = rows.map((item, index) => normalizeApiExercise(item, index)).map((exercise) => ({
+                    ...exercise,
+                    equipment: toTitleCase(exercise?.equipment || 'Bodyweight'),
+                    difficulty: toTitleCase(exercise?.difficulty || 'Beginner'),
+                }));
                 setApiExercises(normalized);
                 await writeCache(EXERCISES_CACHE_KEY, normalized);
                 return;
@@ -219,6 +266,14 @@ export default function Exercises() {
     useEffect(() => {
         loadApiExercises();
     }, [loadApiExercises]);
+
+    useEffect(() => {
+        const loadCache = async () => {
+            const cached = await readSearchCache();
+            setSearchCache(cached);
+        };
+        loadCache();
+    }, []);
 //filtering based on search and category
     const filteredWorkouts = useMemo(() => {
         let results = allExercises;
@@ -237,12 +292,37 @@ export default function Exercises() {
                 (item) => normalizeKey(item?.category) === normalizeKey(selectedCategory)
             );
         }
+        if (selectedEquipment !== 'All') {
+            results = results.filter((item) =>
+                normalizeKey(item?.equipment || 'Bodyweight') === normalizeKey(selectedEquipment)
+            );
+        }
+        if (selectedDifficulty !== 'All') {
+            results = results.filter((item) =>
+                normalizeKey(item?.difficulty || 'Beginner') === normalizeKey(selectedDifficulty)
+            );
+        }
+
+        if (!results.length && searchQuery && allExercises.length === 0) {
+            return getCachedSearch(searchCache, searchQuery);
+        }
+
         return results;
-    }, [allExercises, searchQuery, selectedCategory]);
+    }, [allExercises, searchQuery, selectedCategory, selectedEquipment, selectedDifficulty, searchCache]);
+
+    useEffect(() => {
+        if (!searchQuery || filteredWorkouts.length === 0) return;
+        storeSearchResult(searchQuery, filteredWorkouts).then(() => {
+            setSearchCache((prev) => ({
+                ...prev,
+                [String(searchQuery || '').trim().toLowerCase()]: filteredWorkouts,
+            }));
+        });
+    }, [searchQuery, filteredWorkouts]);
 
     useEffect(() => {
         setVisibleCount(PAGE_SIZE);
-    }, [searchQuery, selectedCategory, allExercises.length]);
+    }, [searchQuery, selectedCategory, selectedEquipment, selectedDifficulty, allExercises.length]);
 
     const visibleWorkouts = useMemo(
         () => filteredWorkouts.slice(0, visibleCount),
@@ -281,7 +361,6 @@ export default function Exercises() {
     );
 
     const activeAccent = getCategoryAccent(selectedCategory).color;
-
     return (
         <View style={styles.container}>
             <StatusBar barStyle="light-content" />
@@ -356,6 +435,39 @@ export default function Exercises() {
                     )}
                 />
 
+                {/* ── Equipment filters ── */}
+                <FlatList
+                    horizontal
+                    data={equipmentOptions}
+                    keyExtractor={(item) => item}
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.chipList}
+                    style={styles.chipRow}
+                    renderItem={({ item }) => (
+                        <FilterChip
+                            label={item}
+                            isActive={selectedEquipment === item}
+                            onPress={() => setSelectedEquipment(item)}
+                        />
+                    )}
+                />
+
+                {/* ── Difficulty filters ── */}
+                <FlatList
+                    horizontal
+                    data={difficultyOptions}
+                    keyExtractor={(item) => item}
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.chipList}
+                    style={styles.chipRow}
+                    renderItem={({ item }) => (
+                        <FilterChip
+                            label={item}
+                            isActive={selectedDifficulty === item}
+                            onPress={() => setSelectedDifficulty(item)}
+                        />
+                    )}
+                />
                 {/* ── Active filter label ── */}
                 {selectedCategory !== 'All' && (
                     <View style={styles.activeFilterRow}>

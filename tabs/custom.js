@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef, memo } from 'react';
 import {
     Alert,
+    FlatList,
     KeyboardAvoidingView,
     Modal,
     Platform,
@@ -334,7 +335,7 @@ const FolderCard = ({ folder, isExpanded, onToggle, onRename, onEdit, onDelete, 
     </View>
 );
 
-const LibraryExerciseRow = ({ exercise, isSelected, onToggle }) => (
+const LibraryExerciseRow = memo(({ exercise, isSelected, onToggle }) => (
     <View style={styles.libraryRow}>
         <View style={{ flex: 1 }}>
             <Text style={styles.libraryName}>{exercise.name}</Text>
@@ -361,9 +362,9 @@ const LibraryExerciseRow = ({ exercise, isSelected, onToggle }) => (
             </Text>
         </TouchableOpacity>
     </View>
-);
+));
 
-const SelectedExerciseEditorRow = ({ exercise, index, onRemove, onChange }) => (
+const SelectedExerciseEditorRow = memo(({ exercise, index, onRemove, onChange }) => (
     <View style={styles.selectedEditorCard}>
         <View style={styles.selectedEditorHeader}>
             <View style={styles.selectedEditorIndexWrap}>
@@ -412,7 +413,7 @@ const SelectedExerciseEditorRow = ({ exercise, index, onRemove, onChange }) => (
             style={[styles.input, styles.notesInput]}
         />
     </View>
-);
+));
 
 export default function Custom() {
     const { user } = useUser();
@@ -429,8 +430,10 @@ export default function Custom() {
     const [activeFolderId, setActiveFolderId] = useState(null);
 
     const [folderName, setFolderName] = useState('');
+    const [debouncedQuery, setDebouncedQuery] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedExercises, setSelectedExercises] = useState([]);
+    const [selectedExpanded, setSelectedExpanded] = useState(false);
     const [apiLibraryExercises, setApiLibraryExercises] = useState([]);
     const [apiLibraryLoading, setApiLibraryLoading] = useState(false);
 
@@ -525,6 +528,13 @@ export default function Custom() {
         loadApiLibraryExercises();
     }, [loadApiLibraryExercises]);
 
+    useEffect(() => {
+        const handle = setTimeout(() => {
+            setDebouncedQuery(searchQuery);
+        }, 250);
+        return () => clearTimeout(handle);
+    }, [searchQuery]);
+
     const libraryExercises = useMemo(() => {
         const localLibrary = Workouts.map((item) => mapLocalExerciseToLibrary(item)).filter((item) => item.name);
         const combined = [...localLibrary, ...apiLibraryExercises];
@@ -541,7 +551,7 @@ export default function Custom() {
     }, [apiLibraryExercises]);
 
     const filteredLibrary = useMemo(() => {
-        const query = normalizeText(searchQuery);
+        const query = normalizeText(debouncedQuery);
         if (!query) return libraryExercises;
 
         return libraryExercises.filter(
@@ -549,7 +559,7 @@ export default function Custom() {
                 normalizeText(exercise.name).includes(query) ||
                 normalizeText(exercise.categoryLabel).includes(query)
         );
-    }, [libraryExercises, searchQuery]);
+    }, [libraryExercises, debouncedQuery]);
 
     const activeFolder = useMemo(
         () => folders.find((folder) => folder.id === activeFolderId) || null,
@@ -566,13 +576,20 @@ export default function Custom() {
         () => new Set(selectedExercises.map((exercise) => String(exercise.sourceId || exercise.name))),
         [selectedExercises]
     );
+    const selectedPreview = useMemo(
+        () => (selectedExpanded ? selectedExercises : selectedExercises.slice(0, 2)),
+        [selectedExercises, selectedExpanded]
+    );
+    const hasMoreSelected = selectedExercises.length > 2;
 
     const resetBuilderState = () => {
         setBuilderMode('create');
         setActiveFolderId(null);
         setFolderName('');
         setSearchQuery('');
+        setDebouncedQuery('');
         setSelectedExercises([]);
+        setSelectedExpanded(false);
     };
 
     const btnScale = useRef(new Animated.Value(1)).current;
@@ -667,10 +684,11 @@ export default function Custom() {
         setFolderName(folder.name);
         setSearchQuery('');
         setSelectedExercises(initialExercises);
+        setSelectedExpanded(false);
         setModalVisible(true);
     };
 
-    const toggleSelectExercise = (libraryExercise) => {
+    const toggleSelectExercise = useCallback((libraryExercise) => {
         const sourceId = String(libraryExercise.sourceId);
         const isSelected = selectedSourceSet.has(sourceId);
 
@@ -690,13 +708,24 @@ export default function Custom() {
         };
 
         setSelectedExercises((prev) => [nextExercise, ...prev]);
-    };
+    }, [selectedSourceSet]);
 
-    const removeSelectedExercise = (exerciseId) => {
+    const renderLibraryItem = useCallback(
+        ({ item: exercise }) => (
+            <LibraryExerciseRow
+                exercise={exercise}
+                isSelected={selectedSourceSet.has(exercise.sourceId)}
+                onToggle={toggleSelectExercise}
+            />
+        ),
+        [selectedSourceSet, toggleSelectExercise]
+    );
+
+    const removeSelectedExercise = useCallback((exerciseId) => {
         setSelectedExercises((prev) => prev.filter((exercise) => exercise.id !== exerciseId));
-    };
+    }, []);
 
-    const updateSelectedExerciseField = (exerciseId, key, value) => {
+    const updateSelectedExerciseField = useCallback((exerciseId, key, value) => {
         setSelectedExercises((prev) =>
             prev.map((exercise) =>
                 exercise.id === exerciseId
@@ -707,7 +736,7 @@ export default function Custom() {
                     : exercise
             )
         );
-    };
+    }, []);
 
     const saveBuilderChanges = async () => {
         const trimmedName = folderName.trim();
@@ -960,86 +989,107 @@ export default function Custom() {
                             </TouchableOpacity>
                         </View>
 
-                        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.modalBody}>
-                            <Text style={styles.inputLabel}>Folder name *</Text>
-                            <TextInput
-                                value={folderName}
-                                onChangeText={setFolderName}
-                                placeholder="e.g. Monday Strength"
-                                placeholderTextColor="#5F5F76"
-                                style={styles.input}
-                            />
+                        <FlatList
+                            data={builderMode === 'rename' ? [] : filteredLibrary}
+                            keyExtractor={(item) => String(item.sourceId)}
+                            showsVerticalScrollIndicator={false}
+                            contentContainerStyle={styles.modalBody}
+                            initialNumToRender={24}
+                            maxToRenderPerBatch={24}
+                            removeClippedSubviews
+                            windowSize={7}
+                            extraData={selectedSourceSet}
+                            renderItem={builderMode === 'rename' ? null : renderLibraryItem}
+                            ListHeaderComponent={
+                                <View>
+                                    <Text style={styles.inputLabel}>Folder name *</Text>
+                                    <TextInput
+                                        value={folderName}
+                                        onChangeText={setFolderName}
+                                        placeholder="e.g. Monday Strength"
+                                        placeholderTextColor="#5F5F76"
+                                        style={styles.input}
+                                    />
 
-                            {builderMode === 'rename' ? null : (
-                                <>
-                                    {builderMode === 'edit' && activeFolder ? (
-                                        <View style={styles.editingFolderChip}>
-                                            <MaterialCommunityIcons name="pencil-circle-outline" size={14} color="#FFB800" />
-                                            <Text style={styles.editingFolderChipText}>Editing: {activeFolder.name}</Text>
-                                        </View>
-                                    ) : null}
-
-                                    <Text style={[styles.inputLabel, { marginTop: 10 }]}>Search exercises</Text>
-                                    <View style={styles.searchBar}>
-                                        <Feather name="search" size={15} color="#7E7E98" />
-                                        <TextInput
-                                            style={styles.searchInput}
-                                            value={searchQuery}
-                                            onChangeText={setSearchQuery}
-                                            placeholder="Search by exercise or body part"
-                                            placeholderTextColor="#5F5F76"
-                                            returnKeyType="search"
-                                        />
-                                        {searchQuery ? (
-                                            <TouchableOpacity onPress={() => setSearchQuery('')}>
-                                                <View style={styles.searchClearBtn}>
-                                                    <Feather name="x" size={11} color="#A0A0B4" />
+                                    {builderMode === 'rename' ? null : (
+                                        <>
+                                            {builderMode === 'edit' && activeFolder ? (
+                                                <View style={styles.editingFolderChip}>
+                                                    <MaterialCommunityIcons name="pencil-circle-outline" size={14} color="#FFB800" />
+                                                    <Text style={styles.editingFolderChipText}>Editing: {activeFolder.name}</Text>
                                                 </View>
-                                            </TouchableOpacity>
-                                        ) : null}
-                                    </View>
+                                            ) : null}
 
-                                    <Text style={styles.resultsCountText}>
-                                        {filteredLibrary.length} result{filteredLibrary.length === 1 ? '' : 's'}
-                                    </Text>
-                                    {apiLibraryLoading ? (
-                                        <Text style={styles.resultsHintText}>Loading API exercises...</Text>
-                                    ) : null}
+                                            <Text style={[styles.inputLabel, { marginTop: 10 }]}>Search exercises</Text>
+                                            <View style={styles.searchBar}>
+                                                <Feather name="search" size={15} color="#7E7E98" />
+                                                <TextInput
+                                                    style={styles.searchInput}
+                                                    value={searchQuery}
+                                                    onChangeText={setSearchQuery}
+                                                    placeholder="Search by exercise or body part"
+                                                    placeholderTextColor="#5F5F76"
+                                                    returnKeyType="search"
+                                                />
+                                                {searchQuery ? (
+                                                    <TouchableOpacity onPress={() => setSearchQuery('')}>
+                                                        <View style={styles.searchClearBtn}>
+                                                            <Feather name="x" size={11} color="#A0A0B4" />
+                                                        </View>
+                                                    </TouchableOpacity>
+                                                ) : null}
+                                            </View>
+                                            {/**selected exercises */}
+                                            <View>
+                                            <Text style={[styles.inputLabel, { marginTop: 12 }]}>Selected exercises</Text>
+                                            {selectedExercises.length === 0 ? (
+                                                <View style={styles.inlineEmptyState}>
+                                                    <Text style={styles.inlineEmptyText}>Select exercises to build this folder.</Text>
+                                                </View>
+                                            ) : (
+                                                selectedPreview.map((exercise, index) => (
+                                                    <SelectedExerciseEditorRow
+                                                        key={exercise.id}
+                                                        exercise={exercise}
+                                                        index={index}
+                                                        onRemove={removeSelectedExercise}
+                                                        onChange={updateSelectedExerciseField}
+                                                    />
+                                                ))
+                                            )}
+                                            {hasMoreSelected ? (
+                                                <TouchableOpacity
+                                                    onPress={() => setSelectedExpanded((prev) => !prev)}
+                                                    activeOpacity={0.85}
+                                                    style={styles.selectedToggleBtn}
+                                                >
+                                                    <Text style={styles.selectedToggleText}>
+                                                        {selectedExpanded ? 'Show less' : `Show all (${selectedExercises.length})`}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            ) : null}
+                                        </View>
 
-                                    {filteredLibrary.length === 0 ? (
+                                            <Text style={styles.resultsCountText}>
+                                                {filteredLibrary.length} result{filteredLibrary.length === 1 ? '' : 's'}
+                                            </Text>
+                                            {apiLibraryLoading ? (
+                                                <Text style={styles.resultsHintText}>Loading API exercises...</Text>
+                                            ) : null}
+                                        </>
+                                    )}
+                                </View>
+                            }
+                            ListEmptyComponent={
+                                builderMode === 'rename'
+                                    ? null
+                                    : (
                                         <View style={styles.inlineEmptyState}>
                                             <Text style={styles.inlineEmptyText}>No exercises match your search.</Text>
                                         </View>
-                                    ) : (
-                                        filteredLibrary.map((exercise) => (
-                                            <LibraryExerciseRow
-                                                key={exercise.sourceId}
-                                                exercise={exercise}
-                                                isSelected={selectedSourceSet.has(exercise.sourceId)}
-                                                onToggle={toggleSelectExercise}
-                                            />
-                                        ))
-                                    )}
-
-                                    <Text style={[styles.inputLabel, { marginTop: 12 }]}>Selected exercises</Text>
-                                    {selectedExercises.length === 0 ? (
-                                        <View style={styles.inlineEmptyState}>
-                                            <Text style={styles.inlineEmptyText}>Select exercises to build this folder.</Text>
-                                        </View>
-                                    ) : (
-                                        selectedExercises.map((exercise, index) => (
-                                            <SelectedExerciseEditorRow
-                                                key={exercise.id}
-                                                exercise={exercise}
-                                                index={index}
-                                                onRemove={removeSelectedExercise}
-                                                onChange={updateSelectedExerciseField}
-                                            />
-                                        ))
-                                    )}
-                                </>
-                            )}
-                        </ScrollView>
+                                    )
+                            }
+                        />
 
                         <TouchableOpacity onPress={saveBuilderChanges} activeOpacity={0.88} style={styles.saveFolderBtn}>
                             <LinearGradient colors={['#00C2FF', '#00E5BE']} style={styles.saveFolderBtnGradient}>
@@ -1565,6 +1615,22 @@ const styles = StyleSheet.create({
     notesInput: {
         minHeight: 64,
         textAlignVertical: 'top',
+    },
+    selectedToggleBtn: {
+        alignSelf: 'flex-start',
+        marginTop: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.12)',
+        backgroundColor: 'rgba(255,255,255,0.04)',
+    },
+    selectedToggleText: {
+        color: '#9AA4B2',
+        fontSize: 11,
+        fontWeight: '700',
+        letterSpacing: 0.6,
     },
     saveFolderBtn: {
         marginTop: 10,

@@ -68,7 +68,7 @@ const StatCard = ({ value, label, icon, delay = 0, accentColor = '#FF4D2E' }) =>
 
 const HomeScreen = () => {
     const [isDark, setIsDark] = useState(true);
-    const { calories, minutes, workout, userProfile, getCompletedDaysForProgram } = useContext(FitnessItems);
+    const { calories, minutes, workout, userProfile, getCompletedDaysForProgram, inProgressWorkout } = useContext(FitnessItems);
     const [todayPlanLabel, setTodayPlanLabel] = useState('');
     const [isTodayPlanLoading, setIsTodayPlanLoading] = useState(false);
     const headerAnim = useRef(new Animated.Value(-20)).current;
@@ -107,8 +107,38 @@ const HomeScreen = () => {
             : todayPlanLabel || 'Built from your goal, level, and equipment.'
         : 'Answer a few questions to generate your training plan.';
 
+    const resumeCard = inProgressWorkout && Array.isArray(inProgressWorkout.exercises) && inProgressWorkout.exercises.length
+        ? {
+            exercises: inProgressWorkout.exercises,
+            completedCount: Array.isArray(inProgressWorkout.completedExercises)
+                ? inProgressWorkout.completedExercises.length
+                : 0,
+            totalCount: inProgressWorkout.exercises.length,
+            savedAt: inProgressWorkout.savedAt,
+            programKey: inProgressWorkout.programKey,
+            programMode: inProgressWorkout.programMode,
+            dayIndex: inProgressWorkout.dayIndex,
+            dayName: inProgressWorkout.dayName,
+            totalDays: inProgressWorkout.totalDays,
+            image: inProgressWorkout.exercises[0]?.gifUrl || inProgressWorkout.exercises[0]?.gif || null,
+        }
+        : null;
+
     const handlePersonalizedPress = () => {
         navigation.navigate(hasProfile ? 'PersonalizedPlan' : 'Onboarding');
+    };
+
+    const handleResumePress = () => {
+        if (!resumeCard) return;
+        navigation.navigate('Workout', {
+            exercises: resumeCard.exercises,
+            image: resumeCard.image,
+            dayName: resumeCard.dayName,
+            dayIndex: resumeCard.dayIndex,
+            totalDays: resumeCard.totalDays,
+            programKey: resumeCard.programKey,
+            programMode: resumeCard.programMode,
+        });
     };
 
     useEffect(() => {
@@ -257,6 +287,27 @@ const HomeScreen = () => {
                 style={styles.scrollBody}
                 contentContainerStyle={{ paddingBottom: 40 }}
             >
+                {resumeCard ? (
+                    <TouchableOpacity onPress={handleResumePress} activeOpacity={0.9} style={styles.resumeWrap}>
+                        <LinearGradient
+                            colors={['#0F1A1A', '#112A2A']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={styles.resumeCard}
+                        >
+                            <View style={styles.resumeCopy}>
+                                <Text style={styles.resumeEyebrow}>CONTINUE</Text>
+                                <Text style={styles.resumeTitle}>Resume workout</Text>
+                                <Text style={styles.resumeMeta}>
+                                    {resumeCard.completedCount}/{resumeCard.totalCount} exercises · saved {new Date(resumeCard.savedAt || Date.now()).toLocaleString()}
+                                </Text>
+                            </View>
+                            <View style={styles.resumeAction}>
+                                <Feather name="play" size={16} color="#00E5BE" />
+                            </View>
+                        </LinearGradient>
+                    </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity
                     onPress={handlePersonalizedPress}
                     activeOpacity={0.9}
@@ -429,6 +480,52 @@ const styles = StyleSheet.create({
     scrollBody: {
         flex: 1,
         marginTop: 6,
+    },
+    resumeWrap: {
+        paddingHorizontal: 20,
+        marginTop: 12,
+    },
+    resumeCard: {
+        borderRadius: 18,
+        padding: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(0,229,190,0.3)',
+        overflow: 'hidden',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    resumeCopy: {
+        flex: 1,
+        paddingRight: 12,
+    },
+    resumeEyebrow: {
+        color: '#7FFFE1',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1.2,
+        marginBottom: 6,
+    },
+    resumeTitle: {
+        color: '#EAFDF8',
+        fontSize: 16,
+        fontWeight: '900',
+        marginBottom: 6,
+    },
+    resumeMeta: {
+        color: '#A0C6BF',
+        fontSize: 11,
+        fontWeight: '600',
+    },
+    resumeAction: {
+        width: 36,
+        height: 36,
+        borderRadius: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,229,190,0.15)',
+        borderWidth: 1,
+        borderColor: 'rgba(0,229,190,0.35)',
     },
     primaryCtaWrap: {
         paddingHorizontal: 22,

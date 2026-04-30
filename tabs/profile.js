@@ -118,7 +118,6 @@ export default function Profile() {
     const { calories, minutes, workout } = useContext(FitnessItems);
     const [googleLoading, setGoogleLoading] = useState(false);
     const syncedUserIdsRef = useRef(new Set());
-
     const { startOAuthFlow } = useOAuth({ strategy: 'oauth_google' });
 
     const headerOpacity = useRef(new Animated.Value(0)).current;
@@ -315,6 +314,7 @@ export default function Profile() {
                             iconName="settings"
                             label="General Settings"
                             accentColor="#34C759"
+                            onPress={() => navigation.navigate('generalS',)}
                             delay={150}
                         />
                         <View style={styles.rowDivider} />

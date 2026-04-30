@@ -1,5 +1,5 @@
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { useEffect, useState, useContext, useRef } from 'react';
+import { useEffect, useState, useContext, useRef, useMemo } from 'react';
 import {
     Image,
     Text,
@@ -10,6 +10,9 @@ import {
     Animated,
     Dimensions,
     StatusBar,
+    Modal,
+    TextInput,
+    Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -53,6 +56,10 @@ const computeRollingAverage = (previousValue, previousCount, nextValue) => {
     const hasPrevious = Number.isFinite(previousValue);
     if (safeCount <= 0 || !hasPrevious) return nextValue;
     return ((previousValue * safeCount) + nextValue) / (safeCount + 1);
+};
+const normalizeExerciseKey = (exercise) => {
+    if (!exercise || typeof exercise.name !== 'string') return null;
+    return exercise.name.trim().toLowerCase().replace(/\s+/g, '_');
 };
 
 const formatElapsed = (totalSeconds) => {
@@ -99,19 +106,6 @@ const FitScreen = () => {
         resumeSession,
         resetProgress,
     } = route.params || {};
-    const initialIndex = (() => {
-        const savedIndex = Number.isInteger(resumeSession?.currentIndex)
-            ? resumeSession.currentIndex
-            : 0;
-        const maxIndex = Math.max(0, exercises.length - 1);
-        return Math.min(Math.max(0, savedIndex), maxIndex);
-    })();
-
-    const [index, setIndex] = useState(initialIndex);
-    const current = exercises[index];
-    const allowExitRef = useRef(false);
-    const hydratedResumeRef = useRef(false);
-
     const {
         completed,
         setCompleted,
@@ -127,9 +121,36 @@ const FitScreen = () => {
         startRestTimer,
         stopRestTimer,
     } = useContext(FitnessItems);
+    const adaptation = getProgramAdaptation(programKey) || {};
+    const exerciseOverrides = adaptation.exerciseOverrides || {};
+
+    const effectiveExercises = useMemo(
+        () =>
+            exercises.map((ex) => {
+                const key = normalizeExerciseKey(ex);
+                const override = exerciseOverrides[key];
+                return override ? { ...ex, ...override } : ex;
+            }),
+        [exercises, exerciseOverrides]
+    );
+
+    const initialIndex = (() => {
+        const savedIndex = Number.isInteger(resumeSession?.currentIndex)
+            ? resumeSession.currentIndex
+            : 0;
+        const maxIndex = Math.max(0, effectiveExercises.length - 1);
+        return Math.min(Math.max(0, savedIndex), maxIndex);
+    })();
+
+    const [index, setIndex] = useState(initialIndex);
+    const current = effectiveExercises[index] || {};
+    const allowExitRef = useRef(false);
+    const hydratedResumeRef = useRef(false);
+
+    
 
     const [timeLeft, setTimeLeft] = useState(() => {
-        const initialExercise = exercises[initialIndex];
+        const initialExercise = effectiveExercises[initialIndex];
         if (initialExercise?.type !== 'time') return 0;
 
         const savedTimeLeft = toNumber(resumeSession?.currentTimeLeft, -1);
@@ -140,6 +161,12 @@ const FitScreen = () => {
         const savedElapsed = toNumber(resumeSession?.elapsedSeconds, 0);
         return Math.max(0, Math.round(savedElapsed));
     });
+
+  const [editVisible, setEditVisible] = useState(false);
+  const [editExercise, setEditExercise] = useState(null);
+  const [editSets, setEditSets] = useState('');
+  const [editReps, setEditReps] = useState('');
+  const [editDuration, setEditDuration] = useState('');
 
     const gifOpacity = useRef(new Animated.Value(0)).current;
     const gifScale = useRef(new Animated.Value(0.95)).current;
@@ -384,8 +411,8 @@ const FitScreen = () => {
         const difficultyFeedback = await promptSessionDifficulty();
         const hadPain = await promptPainPresence();
         const painPoints = hadPain ? await promptPainArea() : [];
-        const completionRate = exercises.length
-            ? clampNumber(doneExercises.length / exercises.length, 0, 1)
+        const completionRate = effectiveExercises.length
+            ? clampNumber(doneExercises.length / effectiveExercises.length, 0, 1)
             : 1;
 
         return {
@@ -544,17 +571,17 @@ const FitScreen = () => {
             personalRecords: result.personalRecords,
             dayName: dayName || null,
             dayNumber: Number.isInteger(dayIndex) ? dayIndex + 1 : null,
-            totalDays: Number.isInteger(totalDays) ? totalDays : exercises.length,
+            totalDays: Number.isInteger(totalDays) ? totalDays : effectiveExercises.length,
         });
     };
 
     const handleNext = () => {
-        if (index + 1 < exercises.length) {
+        if (index + 1 < effectiveExercises.length) {
             startRestTimer(REST_BETWEEN_EXERCISES_SECONDS, true);
             navigation.navigate('Rest', { duration: REST_BETWEEN_EXERCISES_SECONDS });
             setTimeout(() => {
                 setIndex(index + 1);
-                const next = exercises[index + 1];
+                const next = effectiveExercises[index + 1];
                 if (next?.type === 'time') setTimeLeft(next.duration);
             }, 2000);
         } else {
@@ -571,7 +598,7 @@ const FitScreen = () => {
     };
 
     const handleSkip = async () => {
-        if (index + 1 >= exercises.length) {
+        if (index + 1 >= effectiveExercises.length) {
             clearInProgressWorkout();
             await clearInProgressFromBackend(user?.id);
             stopRestTimer();
@@ -583,7 +610,7 @@ const FitScreen = () => {
         navigation.navigate('Rest', { duration: REST_BETWEEN_EXERCISES_SECONDS });
         setTimeout(() => {
             setIndex(index + 1);
-            const next = exercises[index + 1];
+            const next = effectiveExercises[index + 1];
             if (next?.type === 'time') setTimeLeft(next.duration);
         }, 2000);
     };
@@ -596,7 +623,7 @@ const FitScreen = () => {
                 dayIndex,
                 dayName,
                 totalDays,
-                exercises,
+                exercises : effectiveExercises,
                 completedExercises: normalizeCompletedExercises(completed),
                 currentIndex: index,
                 currentTimeLeft: current?.type === 'time' ? toNumber(timeLeft, 0) : null,
@@ -647,7 +674,7 @@ const FitScreen = () => {
         });
 
         return unsubscribe;
-    }, [navigation, index, exercises.length]);
+    }, [navigation, index, effectiveExercises.length]);
 
     // Timer logic
     useEffect(() => {
@@ -660,7 +687,7 @@ const FitScreen = () => {
                     const allExercises = [...completed, current];
                     setCompleted(allExercises);
 
-                    if (index + 1 < exercises.length) {
+                    if (index + 1 < effectiveExercises.length) {
                         handleNext();
                     } else {
                         finishWorkout(allExercises);
@@ -685,7 +712,7 @@ const FitScreen = () => {
         }
     }, [timeLeft]);
 
-    const isLast = index + 1 >= exercises.length;
+    const isLast = index + 1 >= effectiveExercises.length;
     const isTimeBased = current?.type === 'time';
     const timerColor = timeLeft <= 5 ? '#FF4D2E' : '#00E5BE';
 
@@ -701,6 +728,61 @@ const FitScreen = () => {
         Animated.spring(btnScale, { toValue: 0.96, useNativeDriver: true, tension: 300 }).start();
     const handleBtnPressOut = () =>
         Animated.spring(btnScale, { toValue: 1, useNativeDriver: true, tension: 300 }).start();
+
+    const saveOverride = () => {
+    if (!editExercise || !programKey) {
+      setEditVisible(false);
+      return;
+    }
+
+    const key = normalizeExerciseKey(editExercise);
+    if (!key) {
+      setEditVisible(false);
+      return;
+    }
+
+    const prev = getProgramAdaptation(programKey) || {};
+    const currentOverrides = prev.exerciseOverrides || {};
+
+    if (editExercise.type === 'time') {
+      const duration = Math.max(5, parseInt(editDuration || '0', 10));
+      saveProgramAdaptation(programKey, {
+        exerciseOverrides: {
+          ...currentOverrides,
+          [key]: { type: 'time', duration },
+        },
+      });
+    } else {
+      const sets = Math.max(1, parseInt(editSets || '0', 10));
+      const repsNum = parseInt(editReps || '0', 10);
+      const override =
+        repsNum > 0
+          ? { type: 'reps', sets, reps: repsNum }
+          : { type: 'reps', sets };
+
+      saveProgramAdaptation(programKey, {
+        exerciseOverrides: {
+          ...currentOverrides,
+          [key]: override,
+        },
+      });
+    }
+
+    setEditVisible(false);
+  };
+  const resetOverride = () => {
+    if (!editExercise || !programKey) return;
+    const key = normalizeExerciseKey(editExercise);
+    const prev = getProgramAdaptation(programKey) || {};
+    const currentOverrides = { ...(prev.exerciseOverrides || {}) };
+    delete currentOverrides[key];
+
+    saveProgramAdaptation(programKey, { exerciseOverrides: currentOverrides });
+    setEditVisible(false);
+  };
+  const repsLabel = current?.reps
+    ? `${current.sets} x ${current.reps}`
+    : `×${current?.sets}`;
 
     return (
         <View style={styles.container}>
@@ -730,7 +812,7 @@ const FitScreen = () => {
                 {/* Exercise count badge */}
                 <View style={styles.countBadge}>
                     <Text style={styles.countBadgeText}>
-                        {index + 1} / {exercises.length}
+                        {index + 1} / {effectiveExercises.length}
                     </Text>
                 </View>
 
@@ -748,7 +830,7 @@ const FitScreen = () => {
                     ]}
                 >
                     {/* Progress dots */}
-                    <ProgressDots total={exercises.length} current={index} />
+                    <ProgressDots total={effectiveExercises.length} current={index} />
 
                     {/* Exercise name */}
                     <Text style={styles.exerciseName} numberOfLines={2}>
@@ -783,9 +865,32 @@ const FitScreen = () => {
                                 </Text>
                             </Animated.View>
                         ) : (
+                            <View>
+                                 {/* edit reps and sets button */}
+                                  <TouchableOpacity
+    onPress={() => {
+      setEditExercise(current);
+      if (current?.type === 'time') {
+        setEditDuration(String(current.duration || 30));
+        setEditSets('');
+        setEditReps('');
+      } else {
+        setEditSets(String(current.sets || 3));
+        setEditReps(String(current.reps || ''));
+        setEditDuration('');
+      }
+      setEditVisible(true);
+    }}
+    style={styles.editButton}
+  >
+
+                                    <Feather name="edit-3" size={14} color="#6C6C74" />
+                               <Text style={styles.editButtonText}>edit</Text>
+                                </TouchableOpacity>
                             <View style={styles.repsDisplay}>
-                                <Text style={styles.repsValue}>×{current?.sets}</Text>
+                                <Text style={styles.repsValue}>{repsLabel}</Text>
                                 <Text style={styles.repsUnit}>REPS</Text>
+                            </View>
                             </View>
                         )}
                     </View>
@@ -816,7 +921,89 @@ const FitScreen = () => {
                             </LinearGradient>
                         </Animated.View>
                     </TouchableOpacity>
+{/* Edit Modal */}
+                    <Modal
+                        visible={editVisible}
+                        transparent
+                        animationType="fade"
+                        onRequestClose={() => setEditVisible(false)}
+                    >
+                        <Pressable
+                            style={styles.editOverlay}
+                            onPress={() => setEditVisible(false)}
+                        >
+                            <Pressable style={styles.editCard} onPress={() => {}}>
+                                <View style={styles.editHeader}>
+                                    <Text style={styles.editTitle}>
+                                        {editExercise?.name ? `Edit ${editExercise.name}` : 'Edit Exercise'}
+                                    </Text>
+                                    <Text style={styles.editSubtitle}>
+                                        Changes are saved for next time.
+                                    </Text>
+                                </View>
 
+                                {editExercise?.type === 'time' ? (
+                                    <View style={styles.editField}>
+                                        <Text style={styles.editLabel}>Duration (sec)</Text>
+                                        <TextInput
+                                            style={styles.editInput}
+                                            value={editDuration}
+                                            onChangeText={setEditDuration}
+                                            keyboardType="number-pad"
+                                            placeholder="e.g. 45"
+                                            placeholderTextColor="#6C6C74"
+                                        />
+                                    </View>
+                                ) : (
+                                    <View style={styles.editRow}>
+                                        <View style={styles.editField}>
+                                            <Text style={styles.editLabel}>Sets</Text>
+                                            <TextInput
+                                                style={styles.editInput}
+                                                value={editSets}
+                                                onChangeText={setEditSets}
+                                                keyboardType="number-pad"
+                                                placeholder="e.g. 3"
+                                                placeholderTextColor="#6C6C74"
+                                            />
+                                        </View>
+                                        <View style={styles.editField}>
+                                            <Text style={styles.editLabel}>Reps</Text>
+                                            <TextInput
+                                                style={styles.editInput}
+                                                value={editReps}
+                                                onChangeText={setEditReps}
+                                                keyboardType="number-pad"
+                                                placeholder="e.g. 12"
+                                                placeholderTextColor="#6C6C74"
+                                            />
+                                        </View>
+                                    </View>
+                                )}
+
+                                {editExercise?.type === 'time' ? (
+                                    <Text style={styles.editHint}>Minimum is 5 seconds.</Text>
+                                ) : (
+                                    <Text style={styles.editHint}>Leave reps empty to save sets only.</Text>
+                                )}
+
+                                <View style={styles.editActions}>
+                                    <TouchableOpacity
+                                        onPress={() => setEditVisible(false)}
+                                        style={styles.editCancel}
+                                    >
+                                        <Text style={styles.editCancelText}>Cancel</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity onPress={resetOverride} style={styles.editReset}>
+                                        <Text style={styles.editResetText}>Reset</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity onPress={saveOverride} style={styles.editSave}>
+                                        <Text style={styles.editSaveText}>Save</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </Pressable>
+                        </Pressable>
+                    </Modal>
                     {/* Prev / Skip row */}
                     <View style={styles.navRow}>
                         <TouchableOpacity
@@ -1022,6 +1209,110 @@ const styles = StyleSheet.create({
         letterSpacing: 2,
         marginTop: -4,
     },
+    editOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.68)',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 20,
+    },
+    editCard: {
+        width: '100%',
+        maxWidth: 420,
+        backgroundColor: '#16161A',
+        borderRadius: 20,
+        padding: 18,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+        shadowColor: '#000',
+        shadowOpacity: 0.25,
+        shadowRadius: 20,
+        shadowOffset: { width: 0, height: 8 },
+        elevation: 10,
+    },
+    editHeader: {
+        marginBottom: 12,
+    },
+    editTitle: {
+        color: '#fff',
+        fontSize: 18,
+        fontWeight: '800',
+    },
+    editSubtitle: {
+        color: '#8B8B9E',
+        fontSize: 12,
+        marginTop: 4,
+    },
+    editRow: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    editField: {
+        flex: 1,
+        marginTop: 6,
+    },
+    editLabel: {
+        color: '#9A9AB0',
+        fontSize: 12,
+        letterSpacing: 0.4,
+    },
+    editInput: {
+        backgroundColor: '#1E1E26',
+        color: '#fff',
+        borderRadius: 12,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        marginTop: 6,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+    },
+    editHint: {
+        color: '#6C6C74',
+        fontSize: 11,
+        marginTop: 10,
+    },
+    editActions: {
+        flexDirection: 'row',
+        gap: 8,
+        marginTop: 16,
+    },
+    editCancel: {
+        flex: 1,
+        paddingVertical: 12,
+        borderRadius: 12,
+        alignItems: 'center',
+        backgroundColor: '#2A2A35',
+    },
+    editCancelText: {
+        color: '#B2B2C6',
+        fontWeight: '700',
+        fontSize: 13,
+    },
+    editReset: {
+        flex: 1,
+        paddingVertical: 12,
+        borderRadius: 12,
+        alignItems: 'center',
+        backgroundColor: '#3A2A1A',
+    },
+    editResetText: {
+        color: '#FFB800',
+        fontWeight: '700',
+        fontSize: 13,
+    },
+    editSave: {
+        flex: 1,
+        paddingVertical: 12,
+        borderRadius: 12,
+        alignItems: 'center',
+        backgroundColor: '#00E5BE',
+    },
+    editSaveText: {
+        color: '#0C0C10',
+        fontWeight: '800',
+        fontSize: 13,
+    },
+
 
     // Done button
     doneBtn: {
@@ -1041,6 +1332,24 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: '900',
         letterSpacing: 1,
+    },
+        editButton: {
+        position: 'absolute',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        top: 60,
+        right: -60,
+        backgroundColor: '#FF4D2E',
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        borderRadius: 12,
+        zIndex: 1,
+    },
+    editButtonText: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '700',
     },
 
     // Nav row

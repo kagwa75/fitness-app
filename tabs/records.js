@@ -11,13 +11,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { FitnessItems } from '../Context';
 import { useCallback, useContext, useMemo, useRef, useEffect, useState } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useUser } from '@clerk/clerk-expo';
 import { Calendar } from 'react-native-calendars';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import axios from 'axios';
 import API_BASE_URL from '../constants/api';
+import { scheduleStreakReminder } from '../utils/notifications';
 import { readCache, writeCache, isCacheFresh } from '../utils/localCache';
 import { mapWorkoutSession } from '../utils/recordsMapper';
 import { RECORDS_CACHE_KEY_PREFIX, RECORDS_CACHE_TTL_MS } from '../constants/cache';
@@ -241,7 +242,7 @@ const StatCard = ({ value, label, icon, accentColor, delay = 0 }) => {
     );
 };
 
-const SessionCard = ({ session, index, isExpanded, onToggle, showDate = true }) => {
+const SessionCard = ({ session, index, isExpanded, onToggle, onViewDetails, showDate = true }) => {
     const accent = ACCENTS[index % ACCENTS.length];
 
     return (
@@ -291,6 +292,12 @@ const SessionCard = ({ session, index, isExpanded, onToggle, showDate = true }) 
                             </View>
                         ))
                     )}
+                    {typeof onViewDetails === 'function' ? (
+                        <TouchableOpacity onPress={onViewDetails} style={styles.sessionDetailBtn} activeOpacity={0.85}>
+                            <Text style={styles.sessionDetailBtnText}>View full session</Text>
+                            <Feather name="chevron-right" size={12} color="#00E5BE" />
+                        </TouchableOpacity>
+                    ) : null}
                 </View>
             ) : null}
         </View>
@@ -334,6 +341,7 @@ const EmptyState = ({ signedIn }) => {
 export default function Records() {
     const { calories, minutes, workout, completed } = useContext(FitnessItems);
     const { user, isLoaded: isUserLoaded } = useUser();
+    const navigation = useNavigation();
 
     const [records, setRecords] = useState([]);
     const [loadingRecords, setLoadingRecords] = useState(false);
@@ -639,6 +647,20 @@ export default function Records() {
         };
     }, [allRecords, sessionsByDate]);
 
+    const weeklyTrendTiles = useMemo(
+        () =>
+            weeklySnapshot.metrics.map((metric) => ({
+                id: metric.id,
+                label: metric.label,
+                value: metric.value,
+                delta: formatDelta(metric.value, metric.previousValue),
+                tone: getDeltaTone(metric.value, metric.previousValue),
+                color: metric.color,
+                icon: metric.icon,
+            })),
+        [weeklySnapshot.metrics]
+    );
+
     const monthlyRollup = useMemo(() => {
         const thisWeekStart = getWeekStartDate(new Date());
         if (!thisWeekStart) {
@@ -747,6 +769,23 @@ export default function Records() {
             badges,
         };
     }, [allRecords, sortedDateKeys]);
+
+    const hasWorkoutToday = useMemo(() => {
+        const todayKey = toDateKey(new Date());
+        return sortedDateKeys.includes(todayKey);
+    }, [sortedDateKeys]);
+
+    useEffect(() => {
+        if (loadingRecords || showEmpty) return;
+        scheduleStreakReminder({ streak: achievementSummary.streak, hasWorkoutToday });
+    }, [achievementSummary.streak, hasWorkoutToday, loadingRecords, showEmpty]);
+
+    const handleViewSession = useCallback(
+        (session) => {
+            navigation.navigate('SessionDetail', { session });
+        },
+        [navigation]
+    );
 
     const personalHighlights = useMemo(() => {
         if (!allRecords.length) return [];
@@ -920,7 +959,7 @@ export default function Records() {
                     </View>
                 ) : null}
 
-                {!loadingRecords && !showEmpty ? (
+                    {!loadingRecords && !showEmpty ? (
                     <View style={styles.insightsWrap}>
                         <View style={styles.insightCard}>
                             <View style={styles.insightHeaderRow}>
@@ -990,6 +1029,49 @@ export default function Records() {
                                         </View>
                                     );
                                 })}
+                            </View>
+                        </View>
+
+                        <View style={styles.insightCard}>
+                            <View style={styles.insightHeaderRow}>
+                                <View>
+                                    <Text style={styles.insightTitle}>Weekly Trend</Text>
+                                    <Text style={styles.insightSubtitle}>Compared to last week</Text>
+                                </View>
+                            </View>
+                            <View style={styles.trendRow}>
+                                {weeklyTrendTiles.map((tile) => (
+                                    <View key={tile.id} style={styles.trendCard}>
+                                        <View style={[styles.trendIconWrap, { backgroundColor: tile.color + '18' }]}>
+                                            <MaterialCommunityIcons name={tile.icon} size={14} color={tile.color} />
+                                        </View>
+                                        <Text style={styles.trendValue}>{tile.value}</Text>
+                                        <Text style={styles.trendLabel}>{tile.label}</Text>
+                                        <View
+                                            style={[
+                                                styles.trendDeltaPill,
+                                                tile.tone === 'up'
+                                                    ? styles.trendDeltaUp
+                                                    : tile.tone === 'down'
+                                                      ? styles.trendDeltaDown
+                                                      : styles.trendDeltaFlat,
+                                            ]}
+                                        >
+                                            <Text
+                                                style={[
+                                                    styles.trendDeltaText,
+                                                    tile.tone === 'up'
+                                                        ? styles.trendDeltaTextUp
+                                                        : tile.tone === 'down'
+                                                          ? styles.trendDeltaTextDown
+                                                          : styles.trendDeltaTextFlat,
+                                                ]}
+                                            >
+                                                {tile.delta}
+                                            </Text>
+                                        </View>
+                                    </View>
+                                ))}
                             </View>
                         </View>
 
@@ -1198,6 +1280,7 @@ export default function Records() {
                                     showDate={false}
                                     isExpanded={expandedSessionId === item.session.id}
                                     onToggle={() => setExpandedSessionId((prev) => (prev === item.session.id ? null : item.session.id))}
+                                    onViewDetails={() => handleViewSession(item.session)}
                                 />
                             );
                         })}
@@ -1243,6 +1326,7 @@ export default function Records() {
                                                             onToggle={() =>
                                                                 setExpandedSessionId((prev) => (prev === session.id ? null : session.id))
                                                             }
+                                                            onViewDetails={() => handleViewSession(session)}
                                                         />
                                                     ))}
                                                 </View>
@@ -1319,6 +1403,7 @@ export default function Records() {
                                         index={index}
                                         isExpanded={expandedSessionId === session.id}
                                         onToggle={() => setExpandedSessionId((prev) => (prev === session.id ? null : session.id))}
+                                        onViewDetails={() => handleViewSession(session)}
                                     />
                                 ))
                             ) : (
@@ -1585,6 +1670,68 @@ const styles = StyleSheet.create({
         color: '#6F6F86',
         fontSize: 9,
         fontWeight: '600',
+    },
+    trendRow: {
+        flexDirection: 'row',
+        gap: 10,
+        marginTop: 12,
+    },
+    trendCard: {
+        flex: 1,
+        backgroundColor: '#15151B',
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.05)',
+        padding: 12,
+    },
+    trendIconWrap: {
+        width: 28,
+        height: 28,
+        borderRadius: 10,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 8,
+    },
+    trendValue: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: '900',
+    },
+    trendLabel: {
+        color: '#7B7B8F',
+        fontSize: 10,
+        fontWeight: '700',
+        marginTop: 2,
+        letterSpacing: 1.1,
+    },
+    trendDeltaPill: {
+        alignSelf: 'flex-start',
+        marginTop: 8,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 10,
+    },
+    trendDeltaUp: {
+        backgroundColor: 'rgba(45,212,191,0.15)',
+    },
+    trendDeltaDown: {
+        backgroundColor: 'rgba(248,113,113,0.15)',
+    },
+    trendDeltaFlat: {
+        backgroundColor: 'rgba(138,138,162,0.18)',
+    },
+    trendDeltaText: {
+        fontSize: 10,
+        fontWeight: '800',
+    },
+    trendDeltaTextUp: {
+        color: '#2DD4BF',
+    },
+    trendDeltaTextDown: {
+        color: '#F87171',
+    },
+    trendDeltaTextFlat: {
+        color: '#8A8AA2',
     },
     monthlyTrendChip: {
         flexDirection: 'row',
@@ -2034,6 +2181,25 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
         paddingVertical: 8,
         gap: 8,
+    },
+    sessionDetailBtn: {
+        marginTop: 6,
+        alignSelf: 'flex-start',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(0,229,190,0.35)',
+        backgroundColor: 'rgba(0,229,190,0.1)',
+    },
+    sessionDetailBtnText: {
+        color: '#00E5BE',
+        fontSize: 11,
+        fontWeight: '700',
+        letterSpacing: 0.4,
     },
     exerciseRow: {
         flexDirection: 'row',

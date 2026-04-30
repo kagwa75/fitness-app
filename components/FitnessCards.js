@@ -4,7 +4,8 @@ import fity from '../data/deepSeek';
 import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useContext, useMemo } from 'react';
+import { FitnessItems } from '../Context';
 
 const { width } = Dimensions.get('window');
 
@@ -49,7 +50,7 @@ const AnimatedCard = ({ children, delay = 0, style }) => {
 };
 
 // Featured (large) card — first item
-const FeaturedCard = ({ item, index, accent, onPress }) => {
+const FeaturedCard = ({ item, index, accent, onPress, progressLabel }) => {
     const scaleAnim = useRef(new Animated.Value(1)).current;
     const [imageLoadFailed, setImageLoadFailed] = useState(false);
     const imageUri = typeof item?.image === 'string' ? item.image.trim() : '';
@@ -138,6 +139,11 @@ const FeaturedCard = ({ item, index, accent, onPress }) => {
                                 <Text style={styles.metaText}>{item.category}</Text>
                             </View>
                         </View>
+                        {progressLabel ? (
+                            <View style={[styles.progressPill, { borderColor: accent + '60' }]}>
+                                <Text style={styles.progressPillText}>{progressLabel}</Text>
+                            </View>
+                        ) : null}
                     </View>
 
                     {/* Start arrow */}
@@ -151,7 +157,7 @@ const FeaturedCard = ({ item, index, accent, onPress }) => {
 };
 
 // Regular (compact) card
-const CompactCard = ({ item, index, accent, onPress }) => {
+const CompactCard = ({ item, index, accent, onPress, progressLabel }) => {
     const scaleAnim = useRef(new Animated.Value(1)).current;
     const [imageLoadFailed, setImageLoadFailed] = useState(false);
     const imageUri = typeof item?.image === 'string' ? item.image.trim() : '';
@@ -198,6 +204,9 @@ const programsWithoutDays = ['chest', 'back', 'shoulders'];
                         <View>
                             <Text style={styles.compactName}>{item.name}</Text>
                             <Text style={styles.compactCategory}>{item.category?.toUpperCase()}</Text>
+                            {progressLabel ? (
+                                <Text style={styles.compactProgress}>{progressLabel}</Text>
+                            ) : null}
                         </View>
                         <View style={styles.compactRight}>
                             {!programsWithoutDays.includes(String(item.category || '').trim().toLowerCase()) && (
@@ -224,6 +233,28 @@ const FitnessCards = () => {
     const FitnessData = fitness;
     const RefinedData = fity;
     const navigation = useNavigation();
+    const { getCompletedDaysForProgram, getProgramSessionHistory } = useContext(FitnessItems);
+    const programsWithoutDays = useMemo(() => new Set(['chest', 'back', 'shoulders']), []);
+
+    const programProgressMap = useMemo(() => {
+        const map = new Map();
+        RefinedData.forEach((item) => {
+            const listLabel = String(item.category || '').trim();
+            const programKey = listLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            const isNoDays = programsWithoutDays.has(programKey);
+            if (isNoDays) {
+                const sessions = getProgramSessionHistory(programKey) || [];
+                map.set(programKey, sessions.length ? `${sessions.length} sessions` : '');
+                return;
+            }
+            const totalDays = item.days?.length || 0;
+            const completedDays = getCompletedDaysForProgram(programKey).length;
+            if (totalDays > 0) {
+                map.set(programKey, `${completedDays}/${totalDays} days`);
+            }
+        });
+        return map;
+    }, [RefinedData, getCompletedDaysForProgram, getProgramSessionHistory, programsWithoutDays]);
 
     const handleNavigate = (item) => {
         const categoryKey = String(item.category || '').trim().toLowerCase();
@@ -246,25 +277,30 @@ const FitnessCards = () => {
                 const accent = ACCENTS[index % ACCENTS.length];
                 const isFeatured = index === 0;
 
-                return isFeatured ? (
-                    <FeaturedCard
-                        key={index}
-                        item={item}
-                        index={index}
-                        accent={accent}
-                        onPress={() => handleNavigate(item)}
-                    />
-                ) : (
-                    <CompactCard
-                        key={index}
-                        item={item}
-                        index={index}
-                        accent={accent}
-                        onPress={() => handleNavigate(item)}
-                    />
-                );
-            })}
-        </View>
+            const programKey = String(item.category || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            const progressLabel = programProgressMap.get(programKey);
+
+            return isFeatured ? (
+                <FeaturedCard
+                    key={index}
+                    item={item}
+                    index={index}
+                    accent={accent}
+                    progressLabel={progressLabel}
+                    onPress={() => handleNavigate(item)}
+                />
+            ) : (
+                <CompactCard
+                    key={index}
+                    item={item}
+                    index={index}
+                    accent={accent}
+                    progressLabel={progressLabel}
+                    onPress={() => handleNavigate(item)}
+                />
+            );
+        })}
+    </View>
     );
 };
 
@@ -360,6 +396,21 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         gap: 12,
     },
+    progressPill: {
+        alignSelf: 'flex-start',
+        marginTop: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        backgroundColor: 'rgba(0,0,0,0.45)',
+    },
+    progressPillText: {
+        color: '#E6E6F0',
+        fontSize: 10,
+        fontWeight: '700',
+        letterSpacing: 0.6,
+    },
     metaChip: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -424,6 +475,12 @@ const styles = StyleSheet.create({
         fontWeight: '700',
         letterSpacing: 1.2,
         marginTop: 2,
+    },
+    compactProgress: {
+        color: '#C7C7D8',
+        fontSize: 10,
+        fontWeight: '700',
+        marginTop: 6,
     },
     compactRight: {
         alignItems: 'center',
