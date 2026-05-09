@@ -19,6 +19,7 @@ import { useContext, useRef, useEffect, useState } from 'react';
 import { FitnessItems } from '../Context';
 import axios from 'axios';
 import API_BASE_URL from '../constants/api';
+import { getAppHeaders, withAppBody } from '../constants/app';
 
 const { width } = Dimensions.get('window');
 
@@ -150,9 +151,13 @@ export default function Profile() {
 
         try {
             await axios.post(`${API_BASE_URL}/users`, {
-                name,
-                email,
-                clerkId,
+                ...withAppBody({
+                    name,
+                    email,
+                    clerkId,
+                }),
+            }, {
+                headers: getAppHeaders(),
             });
             syncedUserIdsRef.current.add(clerkId);
         } catch (error) {

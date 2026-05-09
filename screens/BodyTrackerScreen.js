@@ -16,6 +16,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth, useUser } from '@clerk/clerk-expo';
 import axios from 'axios';
 import API_BASE_URL from '../constants/api';
+import { getAppHeaders, withAppBody, withAppParams } from '../constants/app';
 
 const MEASUREMENT_FIELDS = [
     { key: 'weight', label: 'Weight', unit: 'kg', color: '#FF4D2E', icon: 'scale-bathroom' },
@@ -100,10 +101,12 @@ export default function BodyTrackerScreen() {
         try {
             const [measurementsRes, goalsRes] = await Promise.all([
                 axios.get(`${API_BASE_URL}/users/body-measurements`, {
-                    params: { clerkUserId: user.id },
+                    params: withAppParams({ clerkUserId: user.id }),
+                    headers: getAppHeaders(),
                 }),
                 axios.get(`${API_BASE_URL}/users/body-goals`, {
-                    params: { clerkUserId: user.id },
+                    params: withAppParams({ clerkUserId: user.id }),
+                    headers: getAppHeaders(),
                 }),
             ]);
 
@@ -180,7 +183,14 @@ export default function BodyTrackerScreen() {
         }
 
         try {
-            await axios.post(`${API_BASE_URL}/users/body-measurements`, payload);
+            await axios.post(`${API_BASE_URL}/users/body-measurements`, {
+                ...withAppBody({
+                    ...payload,
+                    clerkUserId: user.id,
+                }),
+            }, {
+                headers: getAppHeaders(),
+            });
             resetMeasurementForm();
             setShowAddForm(false);
             loadData();
@@ -214,8 +224,12 @@ export default function BodyTrackerScreen() {
 
         try {
             await axios.put(`${API_BASE_URL}/users/body-goals`, {
-                clerkUserId: user.id,
-                goals: goalsPayload,
+                ...withAppBody({
+                    clerkUserId: user.id,
+                    goals: goalsPayload,
+                }),
+            }, {
+                headers: getAppHeaders(),
             });
             setShowGoalForm(false);
             loadData();
@@ -236,7 +250,8 @@ export default function BodyTrackerScreen() {
                 onPress: async () => {
                     try {
                         await axios.delete(`${API_BASE_URL}/users/body-measurements/${measurementId}`, {
-                            data: { clerkUserId: user.id },
+                            data: withAppBody({ clerkUserId: user.id }),
+                            headers: getAppHeaders(),
                         });
                         loadData();
                     } catch (error) {
@@ -252,7 +267,8 @@ export default function BodyTrackerScreen() {
         if (!user?.id) return;
         try {
             await axios.delete(`${API_BASE_URL}/users/body-goals/${metric}`, {
-                data: { clerkUserId: user.id },
+                data: withAppBody({ clerkUserId: user.id }),
+                headers: getAppHeaders(),
             });
             setGoalForm((prev) => ({ ...prev, [metric]: '' }));
             loadData();

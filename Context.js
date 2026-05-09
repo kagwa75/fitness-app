@@ -4,6 +4,7 @@ import NetInfo from "@react-native-community/netinfo";
 import * as SecureStore from "expo-secure-store";
 import axios from "axios";
 import API_BASE_URL from "./constants/api";
+import { getAppHeaders, withAppBody, withAppParams } from "./constants/app";
 import { preloadCustomLibrary, preloadExerciseLibrary, preloadRecords } from "./utils/preload";
 import { dequeueWorkout, readWorkoutQueue } from "./utils/offlineQueue";
 
@@ -297,15 +298,20 @@ const heightIn  = value.heightIn !== undefined ? Number(value.heightIn) : undefi
 
 const fetchProfileFromCloud = async (clerkId) => {
   const response = await axios.get(`${API_BASE_URL}/users/profile`, {
-    params: { clerkId },
+    params: withAppParams({ clerkId }),
+    headers: getAppHeaders(),
   });
   return response.data?.profile ?? null;
 };
 
 const pushProfileToCloud = async (clerkId, profile) => {
   const response = await axios.post(`${API_BASE_URL}/users/profile`, {
-    clerkId,
-    ...profile,
+    ...withAppBody({
+      clerkId,
+      ...profile,
+    }),
+  }, {
+    headers: getAppHeaders(),
   });
   return response.data?.profile ?? null;
 };
@@ -378,7 +384,8 @@ const FitnessContext = ({ children, clerkUserId }) => {
       if (!clerkUserId) return;
       try {
         const response = await axios.get(`${API_BASE_URL}/users/metrics`, {
-          params: { clerkId: clerkUserId },
+          params: withAppParams({ clerkId: clerkUserId }),
+          headers: getAppHeaders(),
         });
         const metrics = response.data?.metrics || {};
         const totals = {
@@ -523,9 +530,13 @@ useEffect(() => {
       for (const item of queue) {
         try {
           await axios.post(`${API_BASE_URL}/users/workouts`, {
-            clerkUserId: item.clerkUserId,
-            exercises: item.exercises,
-            summary: item.summary,
+            ...withAppBody({
+              clerkUserId: item.clerkUserId,
+              exercises: item.exercises,
+              summary: item.summary,
+            }),
+          }, {
+            headers: getAppHeaders(),
           });
           await dequeueWorkout(item.localId);
         } catch (err) {

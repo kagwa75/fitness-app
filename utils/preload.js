@@ -7,6 +7,7 @@ import {
   normalizeApiExercise,
 } from './exerciseApi';
 import { mapWorkoutSession } from './recordsMapper';
+import { getAppHeaders, scopeStorageKey, withAppParams } from '../constants/app';
 import {
   API_LIBRARY_CACHE_KEY,
   API_LIBRARY_CACHE_TTL_MS,
@@ -50,13 +51,14 @@ export const preloadCustomLibrary = async (apiBaseUrl) => {
 
 export const preloadRecords = async (apiBaseUrl, clerkUserId) => {
   if (!clerkUserId) return;
-  const cacheKey = `${RECORDS_CACHE_KEY_PREFIX}${clerkUserId}`;
+  const cacheKey = scopeStorageKey(RECORDS_CACHE_KEY_PREFIX, clerkUserId);
   const cached = await readCache(cacheKey);
   if (isCacheFresh(cached, RECORDS_CACHE_TTL_MS) && Array.isArray(cached?.data)) return;
 
   try {
     const response = await axios.get(`${apiBaseUrl}/users/workouts`, {
-      params: { clerkUserId },
+      params: withAppParams({ clerkUserId }),
+      headers: getAppHeaders(),
     });
     const payload = Array.isArray(response.data) ? response.data : [];
     const mapped = payload.map(mapWorkoutSession).filter(Boolean);

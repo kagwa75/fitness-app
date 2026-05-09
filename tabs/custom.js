@@ -23,6 +23,7 @@ import * as SecureStore from 'expo-secure-store';
 import axios from 'axios';
 import Workouts from '../data/exercises';
 import API_BASE_URL from '../constants/api';
+import { getAppHeaders, scopeStorageKey, withAppBody, withAppParams } from '../constants/app';
 import { readCache, writeCache, isCacheFresh } from '../utils/localCache';
 import { fetchAllApiExercises, formatCategory, getExerciseApiEndpoints, mapApiExerciseToLibrary } from '../utils/exerciseApi';
 import { API_LIBRARY_CACHE_KEY, API_LIBRARY_CACHE_TTL_MS } from '../constants/cache';
@@ -175,7 +176,8 @@ const buildFolderApiErrorMessage = (error, action) => {
 
 const readFoldersFromDatabase = async (clerkUserId) => {
     const response = await axios.get(`${API_BASE_URL}/users/folders`, {
-        params: { clerkUserId },
+        params: withAppParams({ clerkUserId }),
+        headers: getAppHeaders(),
     });
 
     const payload = Array.isArray(response.data) ? response.data : [];
@@ -189,10 +191,14 @@ const saveFolderToDatabase = async (clerkUserId, folder) => {
     }
 
     const response = await axios.post(`${API_BASE_URL}/users/folders`, {
-        clerkUserId,
-        folderId: safeFolder.id,
-        name: safeFolder.name,
-        exercises: safeFolder.exercises,
+        ...withAppBody({
+            clerkUserId,
+            folderId: safeFolder.id,
+            name: safeFolder.name,
+            exercises: safeFolder.exercises,
+        }),
+    }, {
+        headers: getAppHeaders(),
     });
 
     return mapDatabaseFolder(response.data);
@@ -205,9 +211,13 @@ const updateFolderInDatabase = async (clerkUserId, folder) => {
     }
 
     const response = await axios.put(`${API_BASE_URL}/users/folders/${encodeURIComponent(safeFolder.id)}`, {
-        clerkUserId,
-        name: safeFolder.name,
-        exercises: safeFolder.exercises,
+        ...withAppBody({
+            clerkUserId,
+            name: safeFolder.name,
+            exercises: safeFolder.exercises,
+        }),
+    }, {
+        headers: getAppHeaders(),
     });
 
     return mapDatabaseFolder(response.data);
@@ -215,12 +225,13 @@ const updateFolderInDatabase = async (clerkUserId, folder) => {
 
 const deleteFolderFromDatabase = async (clerkUserId, folderId) => {
     await axios.delete(`${API_BASE_URL}/users/folders/${encodeURIComponent(folderId)}`, {
-        data: { clerkUserId },
+        data: withAppBody({ clerkUserId }),
+        headers: getAppHeaders(),
     });
 };
 
 const getFoldersStorageKey = (clerkUserId) =>
-    clerkUserId ? `${FOLDERS_STORAGE_KEY_PREFIX}_${clerkUserId}` : `${FOLDERS_STORAGE_KEY_PREFIX}_guest`;
+    scopeStorageKey(FOLDERS_STORAGE_KEY_PREFIX, clerkUserId);
 
 const writeFolders = async (storageKey, folders) => {
     await writeValueByKey(storageKey, JSON.stringify(folders));

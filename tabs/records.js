@@ -18,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import axios from 'axios';
 import API_BASE_URL from '../constants/api';
+import { getAppHeaders, scopeStorageKey, withAppParams } from '../constants/app';
 import { scheduleStreakReminder } from '../utils/notifications';
 import { readCache, writeCache, isCacheFresh } from '../utils/localCache';
 import { mapWorkoutSession } from '../utils/recordsMapper';
@@ -354,7 +355,7 @@ export default function Records() {
 
     const headerFadeAnim = useRef(new Animated.Value(0)).current;
     const headerYAnim = useRef(new Animated.Value(-16)).current;
-    const recordsCacheKey = user?.id ? `${RECORDS_CACHE_KEY_PREFIX}${user.id}` : null;
+    const recordsCacheKey = user?.id ? scopeStorageKey(RECORDS_CACHE_KEY_PREFIX, user.id) : null;
 
     useEffect(() => {
         Animated.parallel([
@@ -404,7 +405,8 @@ export default function Records() {
 
         try {
             const response = await axios.get(`${API_BASE_URL}/users/workouts`, {
-                params: { clerkUserId: user.id },
+                params: withAppParams({ clerkUserId: user.id }),
+                headers: getAppHeaders(),
             });
 
             const payload = Array.isArray(response.data) ? response.data : [];

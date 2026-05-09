@@ -21,6 +21,7 @@ import axios from 'axios';
 import { isMatchingSession } from '../utils/sessionMatch';
 import { clearInProgressFromBackend } from '../utils/inProgressApi';
 import API_BASE_URL from '../constants/api';
+import { getAppHeaders, withAppParams } from '../constants/app';
 
 const { width, height } = Dimensions.get('window');
 
@@ -179,7 +180,8 @@ const WorkoutScreen = () => {
 
         try {
             const response = await axios.get(`${API_BASE_URL}/users/in-progress`, {
-                params: { clerkUserId: user.id },
+                params: withAppParams({ clerkUserId: user.id }),
+                headers: getAppHeaders(),
             });
 
             const remoteWorkout = response.data?.workoutData || null;

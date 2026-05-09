@@ -21,6 +21,7 @@ import { FitnessItems } from '../Context';
 import { LinearGradient } from 'expo-linear-gradient';
 import axios from 'axios';
 import API_BASE_URL from '../constants/api';
+import { getAppHeaders, withAppBody, withAppParams } from '../constants/app';
 import { buildInProgressPayload } from '../utils/inProgress';
 import { clearInProgressFromBackend, saveInProgressToBackend } from '../utils/inProgressApi';
 import { enqueueWorkout } from '../utils/offlineQueue';
@@ -275,7 +276,8 @@ const FitScreen = () => {
 
         try {
             const response = await axios.get(`${API_BASE_URL}/users/workouts`, {
-                params: { clerkUserId: user.id },
+                params: withAppParams({ clerkUserId: user.id }),
+                headers: getAppHeaders(),
             });
             const sessions = Array.isArray(response.data) ? response.data : [];
 
@@ -503,9 +505,13 @@ const FitScreen = () => {
             }
 
             await axios.post(`${API_BASE_URL}/users/workouts`, {
-                clerkUserId: user.id,
-                exercises: workoutExercises,
-                summary,
+                ...withAppBody({
+                    clerkUserId: user.id,
+                    exercises: workoutExercises,
+                    summary,
+                }),
+            }, {
+                headers: getAppHeaders(),
             });
         } catch (error) {
             const isNetworkError = !error?.response;
@@ -547,7 +553,8 @@ const FitScreen = () => {
         if (user?.id) {
             try {
                 const metricsRes = await axios.get(`${API_BASE_URL}/users/metrics`, {
-                    params: { clerkId: user.id },
+                    params: withAppParams({ clerkId: user.id }),
+                    headers: getAppHeaders(),
                 });
                 const metrics = metricsRes.data?.metrics || {};
                 setWorkout(Number(metrics.workouts) || 0);
